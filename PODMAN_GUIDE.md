@@ -159,24 +159,23 @@ podman run -p 5500:5500 \
 
 ### Run with MCP Servers (Slack Support)
 
-For Slack search to work, the container needs access to Podman socket:
+**⚠️ Important:** Slack search needs special setup in containers!
+
+For Slack search to work, use **host network mode**:
 
 ```bash
-# Run with Podman socket mounted
-podman run -p 5500:5500 \
-  -v /run/podman/podman.sock:/run/podman/podman.sock:Z \
-  -e SLACK_XOXC_TOKEN='xoxc-...' \
-  -e SLACK_XOXD_TOKEN='xoxd-...' \
+# Run with host network
+podman run -d \
+  --network=host \
+  --name unified-search \
+  -v $(pwd)/.saved_credentials.json:/app/.saved_credentials.json:Z \
+  -v $(pwd)/.mcp.json:/app/.mcp.json:Z \
   unified-search:latest
 ```
 
-**Or use host network mode:**
+**Why?** Slack needs access to the MCP server running on your host.
 
-```bash
-podman run --network=host \
-  -v /run/podman/podman.sock:/run/podman/podman.sock:Z \
-  unified-search:latest
-```
+**Full setup guide:** See `SLACK_SETUP_PODMAN.md` for complete instructions!
 
 ### Auto-Restart on Reboot
 
