@@ -2,6 +2,7 @@
 .env
 *.token
 credentials.json
+RUN_WITH_MY_TOKENS.sh
 
 # Python
 __pycache__/
