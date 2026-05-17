@@ -1,0 +1,1407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Unified Search - Jira + SFDC + Slack</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: #000;
+            color: #fff;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        /* Header */
+        .header {
+            background: #000;
+            border-bottom: 3px solid #ee0000;
+            padding: 15px 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .logo-section {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+
+        .search-icon {
+            width: 50px;
+            height: 50px;
+            background: white;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+            color: #ee0000;
+        }
+
+        .redhat-logo {
+            background: white;
+            padding: 10px 20px;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-weight: bold;
+            color: #000;
+        }
+
+        .redhat-logo img {
+            width: 30px;
+            height: 30px;
+        }
+
+        .login-btn {
+            background: white;
+            color: #000;
+            padding: 8px 20px;
+            border-radius: 4px;
+            border: none;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        /* Settings Modal */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.7);
+            animation: fadeIn 0.3s;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        .modal.show {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal-content {
+            background: #1a1a1a;
+            border: 2px solid #ee0000;
+            border-radius: 10px;
+            padding: 30px;
+            max-width: 600px;
+            width: 90%;
+            max-height: 90vh;
+            overflow-y: auto;
+            animation: slideDown 0.3s;
+        }
+
+        @keyframes slideDown {
+            from { transform: translateY(-50px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #333;
+        }
+
+        .modal-title {
+            font-size: 24px;
+            font-weight: 600;
+            color: #ee0000;
+        }
+
+        .close-btn {
+            background: transparent;
+            border: none;
+            color: #999;
+            font-size: 30px;
+            cursor: pointer;
+            padding: 0;
+            width: 30px;
+            height: 30px;
+            line-height: 30px;
+            transition: color 0.3s;
+        }
+
+        .close-btn:hover {
+            color: #ee0000;
+        }
+
+        .config-section {
+            background: #252525;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .config-section-title {
+            font-size: 16px;
+            font-weight: 600;
+            color: #ee0000;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .status-indicator {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+
+        .status-indicator.configured {
+            background: #00ff00;
+            box-shadow: 0 0 10px #00ff00;
+        }
+
+        .status-indicator.not-configured {
+            background: #ff0000;
+            box-shadow: 0 0 10px #ff0000;
+        }
+
+        .status-indicator.from-env {
+            background: #ffaa00;
+            box-shadow: 0 0 10px #ffaa00;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        .form-label {
+            display: block;
+            color: #ccc;
+            font-size: 14px;
+            margin-bottom: 5px;
+            font-weight: 500;
+        }
+
+        .form-input {
+            width: 100%;
+            background: #333;
+            border: 1px solid #555;
+            border-radius: 6px;
+            padding: 10px 12px;
+            color: white;
+            font-size: 14px;
+            font-family: monospace;
+            transition: border-color 0.3s;
+        }
+
+        .form-input:focus {
+            outline: none;
+            border-color: #ee0000;
+        }
+
+        .form-input::placeholder {
+            color: #777;
+        }
+
+        .form-hint {
+            font-size: 12px;
+            color: #777;
+            margin-top: 5px;
+        }
+
+        .modal-footer {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+            margin-top: 20px;
+            padding-top: 20px;
+            border-top: 1px solid #333;
+        }
+
+        .btn {
+            padding: 10px 20px;
+            border-radius: 6px;
+            border: none;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: all 0.3s;
+        }
+
+        .btn-primary {
+            background: #ee0000;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #cc0000;
+        }
+
+        .btn-secondary {
+            background: transparent;
+            color: #ccc;
+            border: 1px solid #555;
+        }
+
+        .btn-secondary:hover {
+            background: #333;
+            border-color: #777;
+        }
+
+        .env-note {
+            background: rgba(255, 170, 0, 0.1);
+            border: 1px solid #ffaa00;
+            border-radius: 6px;
+            padding: 10px;
+            margin-top: 10px;
+            font-size: 12px;
+            color: #ffaa00;
+        }
+
+        /* Main Container */
+        .main-container {
+            display: flex;
+            height: calc(100vh - 90px);
+        }
+
+        /* Left Sidebar */
+        .sidebar {
+            width: 280px;
+            background: #1a1a1a;
+            padding: 20px;
+            overflow-y: auto;
+            border-right: 1px solid #333;
+        }
+
+        .category-btn {
+            width: 100%;
+            background: transparent;
+            border: 2px solid #ee0000;
+            border-radius: 30px;
+            color: white;
+            padding: 12px 20px;
+            margin-bottom: 15px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: all 0.3s;
+            position: relative;
+        }
+
+        .category-btn:hover {
+            background: #ee0000;
+            transform: translateX(5px);
+        }
+
+        .category-btn.active {
+            background: #ee0000;
+        }
+
+        .category-btn::after {
+            content: '»';
+            font-size: 20px;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+
+        .category-btn:hover::after,
+        .category-btn.active::after {
+            opacity: 1;
+        }
+
+        .category-count {
+            background: rgba(255, 255, 255, 0.2);
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+        }
+
+        /* Content Area */
+        .content-area {
+            flex: 1;
+            padding: 20px 30px;
+            overflow-y: auto;
+            background: #0a0a0a;
+        }
+
+        /* Search Box */
+        .search-container {
+            background: white;
+            border-radius: 8px;
+            padding: 15px 20px;
+            margin-bottom: 20px;
+            display: flex;
+            gap: 15px;
+            align-items: center;
+        }
+
+        .search-input {
+            flex: 1;
+            border: none;
+            outline: none;
+            font-size: 16px;
+            color: #333;
+        }
+
+        .search-input::placeholder {
+            color: #999;
+        }
+
+        .send-btn {
+            background: #ee0000;
+            color: white;
+            border: none;
+            padding: 10px 25px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            transition: background 0.3s;
+        }
+
+        .send-btn:hover {
+            background: #cc0000;
+        }
+
+        .send-btn:disabled {
+            background: #666;
+            cursor: not-allowed;
+        }
+
+        /* Results Section */
+        .results-section {
+            background: #1a1a1a;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .section-header {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #333;
+            color: #ee0000;
+        }
+
+        .result-item {
+            background: #252525;
+            border: 1px solid #333;
+            border-radius: 6px;
+            padding: 15px;
+            margin-bottom: 10px;
+            transition: all 0.3s;
+        }
+
+        .result-item:hover {
+            border-color: #ee0000;
+            transform: translateX(5px);
+        }
+
+        .result-title {
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .result-title a {
+            color: #ee0000;
+            text-decoration: none;
+        }
+
+        .result-title a:hover {
+            text-decoration: underline;
+        }
+
+        .result-summary {
+            color: #ccc;
+            font-size: 14px;
+            line-height: 1.5;
+            margin-bottom: 10px;
+        }
+
+        .result-meta {
+            display: flex;
+            gap: 15px;
+            font-size: 12px;
+            color: #999;
+            align-items: center;
+        }
+
+        .badge {
+            background: rgba(238, 0, 0, 0.2);
+            color: #ff6666;
+            padding: 3px 10px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+
+        .result-link {
+            color: #ee0000;
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 12px;
+            margin-left: auto;
+            white-space: nowrap;
+        }
+
+        .result-link:hover {
+            text-decoration: underline;
+        }
+
+        /* Loading */
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #999;
+        }
+
+        .spinner {
+            border: 4px solid #333;
+            border-top: 4px solid #ee0000;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        /* Filter Section */
+        .filter-section {
+            background: #1a1a1a;
+            border-radius: 8px;
+            padding: 15px 20px;
+            margin-bottom: 20px;
+            border: 1px solid #333;
+            display: none;
+        }
+
+        .filter-section.show {
+            display: block;
+        }
+
+        .filter-section h3 {
+            font-size: 14px;
+            color: #ee0000;
+            margin-bottom: 10px;
+            font-weight: 600;
+        }
+
+        .channel-selector {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .channel-checkbox {
+            display: none;
+        }
+
+        .channel-label {
+            background: #2a2a2a;
+            color: #ccc;
+            padding: 6px 12px;
+            border-radius: 15px;
+            font-size: 12px;
+            cursor: pointer;
+            border: 1px solid #444;
+            transition: all 0.3s;
+            user-select: none;
+        }
+
+        .channel-label:hover {
+            background: #333;
+            border-color: #666;
+        }
+
+        .channel-checkbox:checked + .channel-label {
+            background: #ee0000;
+            color: white;
+            border-color: #ee0000;
+        }
+
+        .filter-toggle {
+            background: transparent;
+            color: #ee0000;
+            border: 1px solid #ee0000;
+            padding: 8px 15px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 12px;
+            margin-bottom: 10px;
+            transition: all 0.3s;
+        }
+
+        .filter-toggle:hover {
+            background: #ee0000;
+            color: white;
+        }
+
+        /* Empty State */
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #666;
+        }
+
+        .empty-state-icon {
+            font-size: 64px;
+            margin-bottom: 20px;
+            opacity: 0.3;
+        }
+
+        .empty-state-text {
+            font-size: 18px;
+            margin-bottom: 10px;
+        }
+
+        .empty-state-hint {
+            font-size: 14px;
+            color: #555;
+        }
+
+        /* Error */
+        .error-message {
+            background: rgba(238, 0, 0, 0.1);
+            border: 1px solid #ee0000;
+            color: #ff6666;
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+        }
+
+        /* Hidden */
+        .hidden {
+            display: none;
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 10px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #0a0a0a;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #333;
+            border-radius: 5px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+    </style>
+</head>
+<body>
+    <!-- Header -->
+    <div class="header">
+        <div class="logo-section">
+            <div class="search-icon">🔍</div>
+            <div class="redhat-logo">
+                🎩 <span>Red Hat</span>
+            </div>
+        </div>
+        <button class="login-btn" onclick="openSettings()">⚙️ Settings</button>
+    </div>
+
+    <!-- Settings Modal -->
+    <div id="settingsModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 class="modal-title">⚙️ Credential Configuration</h2>
+                <button class="close-btn" onclick="closeSettings()">&times;</button>
+            </div>
+
+            <div class="env-note" id="saved-creds-note" style="display: none;">
+                💾 <strong>Saved Credentials Detected!</strong> Your credentials are automatically loaded from a saved file.
+            </div>
+
+            <div class="env-note">
+                💡 <strong>Pro Tip:</strong> Your credentials will be saved automatically and loaded next time. You can still update them anytime.
+            </div>
+
+            <!-- Jira Configuration -->
+            <div class="config-section">
+                <div class="config-section-title">
+                    <span class="status-indicator" id="status-jira"></span>
+                    <span>Jira Configuration</span>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Jira Email</label>
+                    <input type="email" id="jira_email" class="form-input" placeholder="your-email@redhat.com">
+                    <div class="form-hint">Environment variable: JIRA_EMAIL</div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Jira API Token</label>
+                    <input type="password" id="jira_token" class="form-input" placeholder="Your Jira API token">
+                    <div class="form-hint">Environment variable: JIRA_API_TOKEN | Generate at: https://id.atlassian.com/manage-profile/security/api-tokens</div>
+                </div>
+            </div>
+
+            <!-- SFDC Configuration -->
+            <div class="config-section">
+                <div class="config-section-title">
+                    <span class="status-indicator" id="status-sfdc"></span>
+                    <span>SFDC Configuration</span>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Red Hat API Offline Token</label>
+                    <input type="password" id="sfdc_token" class="form-input" placeholder="Your offline token">
+                    <div class="form-hint">Environment variable: RH_API_OFFLINE_TOKEN | Get from: Red Hat API Console</div>
+                </div>
+            </div>
+
+            <!-- Slack Configuration -->
+            <div class="config-section">
+                <div class="config-section-title">
+                    <span class="status-indicator" id="status-slack"></span>
+                    <span>Slack Configuration</span>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Slack XOXC Token (Required)</label>
+                    <input type="password" id="slack_xoxc" class="form-input" placeholder="xoxc-...">
+                    <div class="form-hint">Environment variable: SLACK_XOXC_TOKEN | Session cookie token</div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Slack XOXD Token (Required)</label>
+                    <input type="password" id="slack_xoxd" class="form-input" placeholder="xoxd-...">
+                    <div class="form-hint">Environment variable: SLACK_XOXD_TOKEN | Session token</div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Slack Workspace URL (Optional)</label>
+                    <input type="text" id="slack_workspace_url" class="form-input" placeholder="https://redhat.enterprise.slack.com">
+                    <div class="form-hint">Environment variable: SLACK_WORKSPACE_URL | Default: https://redhat.enterprise.slack.com</div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Logs Channel ID (Optional)</label>
+                    <input type="text" id="logs_channel_id" class="form-input" placeholder="C0AKQ7SD0RZ">
+                    <div class="form-hint">Environment variable: LOGS_CHANNEL_ID | Channel ID to filter out log messages</div>
+                </div>
+            </div>
+
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="clearSavedBtn" onclick="clearSavedCredentials()" style="display: none;">🗑️ Clear Saved</button>
+                <button class="btn btn-secondary" onclick="resetToEnv()">Reset to Environment</button>
+                <button class="btn btn-secondary" onclick="closeSettings()">Cancel</button>
+                <button class="btn btn-primary" onclick="saveSettings()">💾 Save & Remember</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Container -->
+    <div class="main-container">
+        <!-- Left Sidebar -->
+        <div class="sidebar">
+            <button class="category-btn active" onclick="showCategory('all')">
+                <span>Show all results</span>
+                <span class="category-count" id="count-all">0</span>
+            </button>
+            <button class="category-btn" onclick="showCategory('sfdc')">
+                <span>Salesforce Tickets</span>
+                <span class="category-count" id="count-sfdc">0</span>
+            </button>
+            <button class="category-btn" onclick="showCategory('slack')">
+                <span>Slack Threads</span>
+                <span class="category-count" id="count-slack">0</span>
+            </button>
+            <button class="category-btn" onclick="showCategory('jira')">
+                <span>JIRA</span>
+                <span class="category-count" id="count-jira">0</span>
+            </button>
+            <button class="category-btn" onclick="showCategory('kcs')">
+                <span>KCS Articles</span>
+                <span class="category-count" id="count-kcs">0</span>
+            </button>
+        </div>
+
+        <!-- Content Area -->
+        <div class="content-area">
+            <!-- Search Box -->
+            <div class="search-container">
+                <input
+                    type="text"
+                    class="search-input"
+                    id="searchInput"
+                    placeholder="Search Smarter, Discover Deeper..."
+                    autofocus
+                >
+                <button class="send-btn" id="sendBtn" onclick="performSearch()">
+                    ✈️ Send
+                </button>
+            </div>
+
+            <!-- Filter Section -->
+            <button class="filter-toggle" onclick="toggleFilters()">
+                🔽 Show Filters (Slack Channels)
+            </button>
+            <div class="filter-section" id="filterSection">
+                <h3>💬 Slack Channel Filter</h3>
+                <div class="channel-selector">
+                    <input type="checkbox" id="ch_all" class="channel-checkbox" checked onchange="toggleAllChannels(this)">
+                    <label for="ch_all" class="channel-label">All Channels</label>
+                </div>
+                <div class="channel-selector" id="channelList" style="margin-top: 10px;">
+                    <!-- Channels will be populated here -->
+                </div>
+            </div>
+
+            <!-- Results Container -->
+            <div id="resultsContainer">
+                <!-- Empty State -->
+                <div class="empty-state" id="emptyState">
+                    <div class="empty-state-icon">🔍</div>
+                    <div class="empty-state-text">Enter a search query to get started</div>
+                    <div class="empty-state-hint">Search across Jira, SFDC, Slack, and KCS simultaneously</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let searchResults = {
+            jira: { issues: [], total: 0 },
+            sfdc: { cases: [], total: 0 },
+            slack: { messages: [], total: 0 },
+            kcs: { articles: [], total: 0 }
+        };
+
+        let currentCategory = 'all';
+        let availableChannels = [];
+
+        // Toggle filter section
+        function toggleFilters() {
+            const filterSection = document.getElementById('filterSection');
+            const btn = event.target;
+
+            if (filterSection.classList.contains('show')) {
+                filterSection.classList.remove('show');
+                btn.textContent = '🔽 Show Filters (Slack Channels)';
+            } else {
+                filterSection.classList.add('show');
+                btn.textContent = '🔼 Hide Filters';
+            }
+        }
+
+        // Toggle all channels checkbox
+        function toggleAllChannels(checkbox) {
+            const channelCheckboxes = document.querySelectorAll('#channelList .channel-checkbox');
+            channelCheckboxes.forEach(cb => {
+                cb.checked = checkbox.checked;
+            });
+        }
+
+        // Populate channel list
+        function populateChannels(channels) {
+            if (!channels || channels.length === 0) return;
+
+            availableChannels = channels;
+            const channelList = document.getElementById('channelList');
+            channelList.innerHTML = '';
+
+            channels.forEach(channel => {
+                const id = `ch_${channel.replace(/-/g, '_')}`;
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.id = id;
+                checkbox.className = 'channel-checkbox';
+                checkbox.checked = true;
+                checkbox.onchange = function() {
+                    // If any channel is unchecked, uncheck "All"
+                    const allChecked = Array.from(document.querySelectorAll('#channelList .channel-checkbox')).every(cb => cb.checked);
+                    document.getElementById('ch_all').checked = allChecked;
+                };
+
+                const label = document.createElement('label');
+                label.htmlFor = id;
+                label.className = 'channel-label';
+                label.textContent = `#${channel}`;
+
+                channelList.appendChild(checkbox);
+                channelList.appendChild(label);
+            });
+        }
+
+        // Get selected channels
+        function getSelectedChannels() {
+            const allCheckbox = document.getElementById('ch_all');
+            if (allCheckbox.checked) {
+                return ['ALL'];
+            }
+
+            const selectedChannels = [];
+            const channelCheckboxes = document.querySelectorAll('#channelList .channel-checkbox:checked');
+            channelCheckboxes.forEach(cb => {
+                const channelName = cb.id.replace('ch_', '').replace(/_/g, '-');
+                selectedChannels.push(channelName);
+            });
+
+            return selectedChannels.length > 0 ? selectedChannels : ['ALL'];
+        }
+
+        // Enter key to search
+        document.getElementById('searchInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                performSearch();
+            }
+        });
+
+        async function performSearch() {
+            const query = document.getElementById('searchInput').value.trim();
+
+            if (!query) {
+                alert('Please enter a search query');
+                return;
+            }
+
+            // Show loading
+            const resultsContainer = document.getElementById('resultsContainer');
+            const sendBtn = document.getElementById('sendBtn');
+
+            resultsContainer.innerHTML = `
+                <div class="loading">
+                    <div class="spinner"></div>
+                    <p>Searching across Jira, SFDC, Slack, and KCS...</p>
+                </div>
+            `;
+
+            sendBtn.disabled = true;
+            sendBtn.textContent = '⏳ Searching...';
+
+            try {
+                const selectedChannels = getSelectedChannels();
+
+                const response = await fetch('/search', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        query: query,
+                        max_results: 100,
+                        slack_channels: selectedChannels.includes('ALL') ? null : selectedChannels
+                    })
+                });
+
+                const data = await response.json();
+
+                if (data.error) {
+                    resultsContainer.innerHTML = `
+                        <div class="error-message">
+                            <strong>Error:</strong> ${data.error}
+                        </div>
+                    `;
+                    return;
+                }
+
+                // Store results
+                searchResults = data;
+
+                // Populate channel filter if channels are available
+                if (data.slack && data.slack.channels) {
+                    populateChannels(data.slack.channels);
+                }
+
+                // Update counts
+                updateCounts();
+
+                // Display results
+                displayResults(currentCategory);
+
+            } catch (error) {
+                resultsContainer.innerHTML = `
+                    <div class="error-message">
+                        <strong>Error:</strong> ${error.message}
+                    </div>
+                `;
+            } finally {
+                sendBtn.disabled = false;
+                sendBtn.textContent = '✈️ Send';
+            }
+        }
+
+        function updateCounts() {
+            const jiraCount = searchResults.jira?.total || 0;
+            const sfdcCount = searchResults.sfdc?.total || 0;
+            const slackCount = searchResults.slack?.total || 0;
+            const kcsCount = searchResults.kcs?.total || 0;
+            const totalCount = jiraCount + sfdcCount + slackCount + kcsCount;
+
+            document.getElementById('count-all').textContent = totalCount;
+            document.getElementById('count-sfdc').textContent = sfdcCount;
+            document.getElementById('count-slack').textContent = slackCount;
+            document.getElementById('count-jira').textContent = jiraCount;
+            document.getElementById('count-kcs').textContent = kcsCount;
+        }
+
+        function showCategory(category) {
+            currentCategory = category;
+
+            // Update active button
+            document.querySelectorAll('.category-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            event.target.closest('.category-btn').classList.add('active');
+
+            // Display results for this category
+            displayResults(category);
+        }
+
+        function displayResults(category) {
+            const container = document.getElementById('resultsContainer');
+
+            // Check if we have any results
+            const hasJira = searchResults.jira?.issues?.length > 0;
+            const hasSfdc = searchResults.sfdc?.cases?.length > 0;
+            const hasSlack = searchResults.slack?.messages?.length > 0;
+            const hasKcs = searchResults.kcs?.articles?.length > 0;
+
+            if (!hasJira && !hasSfdc && !hasSlack && !hasKcs) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">😕</div>
+                        <div class="empty-state-text">No results found</div>
+                        <div class="empty-state-hint">Try different keywords or check your filters</div>
+                    </div>
+                `;
+                return;
+            }
+
+            let html = '';
+
+            // Show all or specific category
+            if (category === 'all' || category === 'sfdc') {
+                if (hasSfdc) {
+                    html += renderSfdcResults();
+                }
+            }
+
+            if (category === 'all' || category === 'kcs') {
+                if (hasKcs) {
+                    html += renderKcsResults();
+                }
+            }
+
+            if (category === 'all' || category === 'slack') {
+                if (hasSlack) {
+                    html += renderSlackResults();
+                }
+            }
+
+            if (category === 'all' || category === 'jira') {
+                if (hasJira) {
+                    html += renderJiraResults();
+                }
+            }
+
+            container.innerHTML = html || `
+                <div class="empty-state">
+                    <div class="empty-state-icon">📭</div>
+                    <div class="empty-state-text">No results in this category</div>
+                </div>
+            `;
+        }
+
+        function renderSfdcResults() {
+            const cases = searchResults.sfdc?.cases || [];
+            if (cases.length === 0) return '';
+
+            let html = `
+                <div class="results-section">
+                    <div class="section-header">
+                        🎫 SFDC - ${cases.length} Salesforce Ticket${cases.length !== 1 ? 's' : ''}
+                    </div>
+            `;
+
+            cases.forEach(caseItem => {
+                html += `
+                    <div class="result-item">
+                        <div class="result-title">
+                            <a href="${caseItem.url}" target="_blank">Case ${caseItem.case_number}</a>
+                        </div>
+                        <div class="result-summary">${escapeHtml(caseItem.summary)}</div>
+                        <div class="result-meta">
+                            <span class="badge">${caseItem.status}</span>
+                            <span class="badge">Severity ${caseItem.severity}</span>
+                            <span>${caseItem.product}</span>
+                        </div>
+                    </div>
+                `;
+            });
+
+            html += '</div>';
+            return html;
+        }
+
+        function renderSlackResults() {
+            const messages = searchResults.slack?.messages || [];
+
+            if (messages.length === 0) {
+                return '';
+            }
+
+            let html = `
+                <div class="results-section">
+                    <div class="section-header">
+                        💬 Slack - ${messages.length} Thread${messages.length !== 1 ? 's' : ''}
+                    </div>
+            `;
+
+            messages.forEach((msg, index) => {
+                try {
+                    const channelName = msg.channel_name || 'unknown';
+                    const userName = msg.user || 'unknown';
+                    const text = msg.text || 'No content';
+                    const timestamp = msg.timestamp || '';
+
+                    // Extract Slack URL from message text
+                    let slackUrl = null;
+                    const slackUrlMatch = text.match(/https:\/\/redhat-internal\.slack\.com\/archives\/[A-Z0-9]+\/p[0-9]+/);
+                    if (slackUrlMatch) {
+                        slackUrl = slackUrlMatch[0];
+                    }
+
+                    // Try to construct Slack permalink from channel_id and ts
+                    if (!slackUrl && msg.channel_id && msg.ts) {
+                        const ts_formatted = msg.ts.replace('.', '');
+                        slackUrl = `https://redhat-internal.slack.com/archives/${msg.channel_id}/p${ts_formatted}`;
+                    }
+
+                    // Create enhanced search query for Slack
+                    const textSnippet = text.replace(/\n/g, ' ').replace(/[<>]/g, '').substring(0, 100).trim();
+
+                    // Extract date from timestamp for date filtering
+                    let dateFilter = '';
+                    if (timestamp) {
+                        try {
+                            const datePart = timestamp.split(' ')[0]; // Get YYYY-MM-DD
+                            dateFilter = ` on:${datePart}`;
+                        } catch (e) {
+                            // If date extraction fails, continue without it
+                        }
+                    }
+
+                    // Build search query with user, date, and text snippet
+                    const slackSearchQuery = `from:${userName}${dateFilter} ${textSnippet}`;
+                    const slackSearchUrl = `https://redhat-internal.slack.com/app_redirect?app=search&query=${encodeURIComponent(slackSearchQuery)}`;
+
+                    html += `
+                        <div class="result-item">
+                            <div class="result-title">
+                                ${slackUrl ? `<a href="${slackUrl}" target="_blank">` : ''}
+                                #${channelName} - @${userName}
+                                ${slackUrl ? ` 🔗</a>` : ''}
+                            </div>
+                            <div class="result-summary" style="white-space: pre-wrap; word-wrap: break-word;">${escapeHtml(text)}</div>
+                            <div class="result-meta">
+                                <span class="badge">⏰ ${timestamp}</span>
+                                ${msg.channel_name ? `<span class="badge">📢 #${msg.channel_name}</span>` : ''}
+                                ${slackUrl ?
+                                    `<a href="${slackUrl}" target="_blank" class="result-link">View in Slack →</a>` :
+                                    `<a href="${slackSearchUrl}" target="_blank" class="result-link">🔍 Find in Slack →</a>`
+                                }
+                            </div>
+                        </div>
+                    `;
+
+                } catch (error) {
+                    console.error(`Error rendering Slack message ${index + 1}:`, error);
+                }
+            });
+
+            html += '</div>';
+            return html;
+        }
+
+        function renderJiraResults() {
+            const issues = searchResults.jira?.issues || [];
+            if (issues.length === 0) return '';
+
+            let html = `
+                <div class="results-section">
+                    <div class="section-header">
+                        🔧 JIRA - ${issues.length} Issue${issues.length !== 1 ? 's' : ''}
+                    </div>
+            `;
+
+            issues.forEach(issue => {
+                html += `
+                    <div class="result-item">
+                        <div class="result-title">
+                            <a href="${issue.url}" target="_blank">${issue.key}</a> - ${escapeHtml(issue.summary)}
+                        </div>
+                        <div class="result-summary">${escapeHtml(issue.description || 'No description')}</div>
+                        <div class="result-meta">
+                            <span class="badge">${issue.status}</span>
+                            <span class="badge">${issue.priority}</span>
+                            <span>${issue.project}</span>
+                        </div>
+                    </div>
+                `;
+            });
+
+            html += '</div>';
+            return html;
+        }
+
+        function renderKcsResults() {
+            const articles = searchResults.kcs?.articles || [];
+            if (articles.length === 0) return '';
+
+            let html = `
+                <div class="results-section">
+                    <div class="section-header">
+                        📚 KCS - ${articles.length} Article${articles.length !== 1 ? 's' : ''} / Solution${articles.length !== 1 ? 's' : ''}
+                    </div>
+            `;
+
+            articles.forEach(article => {
+                html += `
+                    <div class="result-item">
+                        <div class="result-title">
+                            <a href="${article.url}" target="_blank">${article.id}</a> - ${escapeHtml(article.title)}
+                        </div>
+                        <div class="result-meta">
+                            <span class="badge">${article.document_kind}</span>
+                            <span class="badge">⭐ Score: ${Math.round(article.score)}</span>
+                        </div>
+                    </div>
+                `;
+            });
+
+            html += '</div>';
+            return html;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // ============================================================================
+        // Settings Modal Functions
+        // ============================================================================
+
+        async function loadConfigStatus() {
+            try {
+                const response = await fetch('/api/config');
+                const status = await response.json();
+
+                // Update status indicators
+                updateStatusIndicator('jira', status.jira.configured, status.jira.has_env);
+                updateStatusIndicator('sfdc', status.sfdc.configured, status.sfdc.has_env);
+                updateStatusIndicator('slack', status.slack.configured, status.slack.has_env);
+
+                // Populate non-sensitive fields if available
+                if (status.jira.email) {
+                    document.getElementById('jira_email').value = status.jira.email;
+                }
+
+                // Populate Slack workspace URL with default if available
+                const workspaceUrl = status.slack?.workspace_url || 'https://redhat.enterprise.slack.com';
+                document.getElementById('slack_workspace_url').placeholder = workspaceUrl;
+
+                // Show logs channel ID if available (non-sensitive)
+                if (status.slack?.logs_channel_id) {
+                    document.getElementById('logs_channel_id').placeholder = status.slack.logs_channel_id;
+                }
+
+                // Show/hide saved credentials note and clear button
+                const hasSaved = status.has_saved_credentials;
+                const savedNote = document.getElementById('saved-creds-note');
+                const clearBtn = document.getElementById('clearSavedBtn');
+
+                if (hasSaved) {
+                    savedNote.style.display = 'block';
+                    clearBtn.style.display = 'inline-block';
+                } else {
+                    savedNote.style.display = 'none';
+                    clearBtn.style.display = 'none';
+                }
+
+                return status;
+            } catch (error) {
+                console.error('Failed to load config status:', error);
+            }
+        }
+
+        function updateStatusIndicator(service, configured, hasEnv) {
+            const indicator = document.getElementById(`status-${service}`);
+            if (!indicator) return;
+
+            indicator.className = 'status-indicator';
+
+            if (configured) {
+                if (hasEnv) {
+                    indicator.classList.add('from-env');
+                    indicator.title = 'Configured from environment variable';
+                } else {
+                    indicator.classList.add('configured');
+                    indicator.title = 'Configured from user input';
+                }
+            } else {
+                indicator.classList.add('not-configured');
+                indicator.title = 'Not configured';
+            }
+        }
+
+        async function openSettings() {
+            const modal = document.getElementById('settingsModal');
+            modal.classList.add('show');
+
+            // Load current config status
+            await loadConfigStatus();
+        }
+
+        function closeSettings() {
+            const modal = document.getElementById('settingsModal');
+            modal.classList.remove('show');
+
+            // Clear password/sensitive fields for security
+            document.getElementById('jira_token').value = '';
+            document.getElementById('sfdc_token').value = '';
+            document.getElementById('slack_xoxc').value = '';
+            document.getElementById('slack_xoxd').value = '';
+        }
+
+        async function saveSettings() {
+            const config = {
+                jira_email: document.getElementById('jira_email').value.trim(),
+                jira_token: document.getElementById('jira_token').value.trim(),
+                sfdc_token: document.getElementById('sfdc_token').value.trim(),
+                slack_xoxc: document.getElementById('slack_xoxc').value.trim(),
+                slack_xoxd: document.getElementById('slack_xoxd').value.trim(),
+                slack_workspace_url: document.getElementById('slack_workspace_url').value.trim(),
+                logs_channel_id: document.getElementById('logs_channel_id').value.trim(),
+            };
+
+            // Only send non-empty values
+            const updateConfig = {};
+            for (const [key, value] of Object.entries(config)) {
+                if (value) {
+                    updateConfig[key] = value;
+                }
+            }
+
+            if (Object.keys(updateConfig).length === 0) {
+                alert('Please enter at least one credential');
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/config', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(updateConfig)
+                });
+
+                const result = await response.json();
+
+                if (result.status === 'success') {
+                    alert('✅ Configuration saved successfully!');
+                    closeSettings();
+                    await loadConfigStatus();
+                } else {
+                    alert('❌ Failed to save configuration');
+                }
+            } catch (error) {
+                console.error('Failed to save settings:', error);
+                alert('❌ Error saving configuration: ' + error.message);
+            }
+        }
+
+        async function resetToEnv() {
+            if (!confirm('Reset all credentials to environment variables?')) {
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/config/reset', {
+                    method: 'POST'
+                });
+
+                const result = await response.json();
+
+                if (result.status === 'success') {
+                    alert('✅ Configuration reset to environment variables!');
+                    closeSettings();
+                    await loadConfigStatus();
+                } else {
+                    alert('❌ Failed to reset configuration');
+                }
+            } catch (error) {
+                console.error('Failed to reset settings:', error);
+                alert('❌ Error resetting configuration: ' + error.message);
+            }
+        }
+
+        async function clearSavedCredentials() {
+            if (!confirm('Clear saved credentials? You will need to enter them again next time.\n\nThis will delete the saved credentials file.')) {
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/config/clear-saved', {
+                    method: 'POST'
+                });
+
+                const result = await response.json();
+
+                if (result.status === 'success') {
+                    alert('✅ ' + result.message + '\n\nCredentials cleared. You will need to enter them again next time.');
+                    closeSettings();
+                    await loadConfigStatus();
+                } else {
+                    alert('❌ Failed to clear saved credentials: ' + result.message);
+                }
+            } catch (error) {
+                console.error('Failed to clear saved credentials:', error);
+                alert('❌ Error clearing credentials: ' + error.message);
+            }
+        }
+
+        // Close modal when clicking outside
+        window.onclick = function(event) {
+            const modal = document.getElementById('settingsModal');
+            if (event.target === modal) {
+                closeSettings();
+            }
+        }
+
+        // Load config status on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            loadConfigStatus();
+        });
+    </script>
+</body>
+</html>

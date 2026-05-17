@@ -1,0 +1,47 @@
+{
+  "mcpServers": {
+    "ask-sre": {
+      "type": "stdio",
+      "command": "poetry",
+      "args": [
+        "run",
+        "ask-sre",
+        "mcp"
+      ],
+      "env": {}
+    },
+    "slack": {
+      "command": "podman",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "-e",
+        "SLACK_XOXC_TOKEN",
+        "-e",
+        "SLACK_XOXD_TOKEN",
+        "-e",
+        "LOGS_CHANNEL_ID",
+        "-e",
+        "MCP_TRANSPORT",
+        "quay.io/redhat-ai-tools/slack-mcp"
+      ],
+      "env": {
+        "SLACK_XOXC_TOKEN": "your-xoxc-token-here",
+        "SLACK_XOXD_TOKEN": "your-xoxd-token-here",
+        "SLACK_WORKSPACE_URL": "https://your-workspace.slack.com",
+        "LOGS_CHANNEL_ID": "YOUR_CHANNEL_ID",
+        "MCP_TRANSPORT": "stdio"
+      }
+    },
+    "mcp-atlassian": {
+      "command": "uvx",
+      "args": ["mcp-atlassian"],
+      "env": {
+        "JIRA_URL": "https://your-jira-instance.atlassian.net",
+        "JIRA_USERNAME": "Your Name",
+        "JIRA_API_TOKEN": "your-jira-api-token-here"
+      }
+    }
+  }
+}

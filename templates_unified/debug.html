@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Debug - API Test</title>
+    <style>
+        body {
+            font-family: monospace;
+            background: #000;
+            color: #0f0;
+            padding: 20px;
+        }
+        .section {
+            margin: 20px 0;
+            padding: 15px;
+            border: 1px solid #0f0;
+        }
+        button {
+            background: #0f0;
+            color: #000;
+            padding: 10px 20px;
+            border: none;
+            cursor: pointer;
+            margin: 5px;
+        }
+        pre {
+            background: #111;
+            padding: 10px;
+            overflow-x: auto;
+        }
+        .error { color: #f00; }
+        .success { color: #0f0; }
+    </style>
+</head>
+<body>
+    <h1>🔍 Unified Search - Debug Console</h1>
+
+    <div class="section">
+        <h2>1. Test Config API</h2>
+        <button onclick="testConfigAPI()">GET /api/config</button>
+        <pre id="config-result"></pre>
+    </div>
+
+    <div class="section">
+        <h2>2. Test Search API</h2>
+        <input type="text" id="search-query" value="test" placeholder="Search query">
+        <button onclick="testSearchAPI()">POST /search</button>
+        <pre id="search-result"></pre>
+    </div>
+
+    <div class="section">
+        <h2>3. Browser Console</h2>
+        <p>Open DevTools (F12) and check the Console tab for errors</p>
+    </div>
+
+    <script>
+        async function testConfigAPI() {
+            const resultEl = document.getElementById('config-result');
+            resultEl.innerHTML = 'Loading...';
+
+            try {
+                const response = await fetch('/api/config');
+                const text = await response.text();
+
+                resultEl.innerHTML = `Status: ${response.status}\n`;
+                resultEl.innerHTML += `Content-Type: ${response.headers.get('content-type')}\n\n`;
+
+                try {
+                    const data = JSON.parse(text);
+                    resultEl.innerHTML += JSON.stringify(data, null, 2);
+                    resultEl.className = 'success';
+                } catch (e) {
+                    resultEl.innerHTML += `JSON Parse Error: ${e.message}\n\n`;
+                    resultEl.innerHTML += `Raw Response:\n${text}`;
+                    resultEl.className = 'error';
+                }
+            } catch (error) {
+                resultEl.innerHTML = `Error: ${error.message}`;
+                resultEl.className = 'error';
+            }
+        }
+
+        async function testSearchAPI() {
+            const resultEl = document.getElementById('search-result');
+            const query = document.getElementById('search-query').value;
+            resultEl.innerHTML = 'Loading...';
+
+            try {
+                const response = await fetch('/search', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        query: query,
+                        max_results: 5
+                    })
+                });
+
+                const text = await response.text();
+
+                resultEl.innerHTML = `Status: ${response.status}\n`;
+                resultEl.innerHTML += `Content-Type: ${response.headers.get('content-type')}\n\n`;
+
+                try {
+                    const data = JSON.parse(text);
+                    resultEl.innerHTML += JSON.stringify(data, null, 2);
+                    resultEl.className = 'success';
+                } catch (e) {
+                    resultEl.innerHTML += `JSON Parse Error: ${e.message}\n\n`;
+                    resultEl.innerHTML += `Raw Response:\n${text}`;
+                    resultEl.className = 'error';
+                }
+            } catch (error) {
+                resultEl.innerHTML = `Error: ${error.message}`;
+                resultEl.className = 'error';
+            }
+        }
+
+        // Auto-test on load
+        window.onload = () => {
+            console.log('Debug page loaded');
+            testConfigAPI();
+        };
+    </script>
+</body>
+</html>
