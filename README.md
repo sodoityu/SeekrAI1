@@ -121,7 +121,7 @@ sudo dnf install python3.13 python3.13-pip
 # Clone the repository (if not already)
 cd /path/to/unified-search
 
-# Install dependencies
+# Install dependencies (includes Flask, Requests, and MCP SDK)
 pip3.13 install -r requirements.txt
 ```
 
@@ -131,7 +131,7 @@ pip3.13 install -r requirements.txt
 # Install Python 3.13 with Homebrew
 brew install python@3.13
 
-# Install dependencies
+# Install dependencies (includes Flask, Requests, and MCP SDK)
 pip3.13 install -r requirements.txt
 ```
 
@@ -142,9 +142,16 @@ pip3.13 install -r requirements.txt
 sudo apt update
 sudo apt install python3.13 python3.13-pip
 
-# Install dependencies
+# Install dependencies (includes Flask, Requests, and MCP SDK)
 pip3.13 install -r requirements.txt
 ```
+
+**Note:** The `requirements.txt` includes:
+- `flask>=2.3.0` - Web framework
+- `requests>=2.31.0` - HTTP library for API calls
+- `mcp>=1.0.0` - Model Context Protocol SDK for Slack integration
+
+**No additional MCP server setup needed!** The MCP SDK is automatically installed with the dependencies, and `unified_search.py` handles all Slack MCP communication internally.
 
 ### Setup Credentials
 
