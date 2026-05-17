@@ -29,10 +29,7 @@ podman run -d \
   --name unified-search \
   -e SLACK_XOXC_TOKEN='YOUR-SLACK-XOXC-TOKEN-HERE' \
   -e SLACK_XOXD_TOKEN='YOUR-SLACK-XOXD-TOKEN-HERE' \
-  -e SLACK_WORKSPACE_URL='https://your-workspace.slack.com' \
-  -e JIRA_URL='https://your-company.atlassian.net' \
-  -e JIRA_EMAIL='your-email@company.com' \
-  -e JIRA_USERNAME='your-email@company.com' \
+  -e JIRA_EMAIL='your-email@redhat.com' \
   -e JIRA_API_TOKEN='YOUR-JIRA-API-TOKEN-HERE' \
   -e RH_API_OFFLINE_TOKEN='YOUR-REDHAT-OFFLINE-TOKEN-HERE' \
   unified-search:latest

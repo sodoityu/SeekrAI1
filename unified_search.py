@@ -29,11 +29,11 @@ app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=7)  # Session lasts 7 
 DEFAULT_CONFIG = {
     "jira_email": os.getenv("JIRA_EMAIL", ""),
     "jira_token": os.getenv("JIRA_API_TOKEN", ""),
-    "jira_base_url": os.getenv("JIRA_BASE_URL", "https://redhat.atlassian.net/rest/api/3"),
+    "jira_base_url": "https://redhat.atlassian.net/rest/api/3",  # Hardcoded for Red Hat
     "sfdc_token": os.getenv("RH_API_OFFLINE_TOKEN", ""),
     "slack_xoxc": os.getenv("SLACK_XOXC_TOKEN", ""),
     "slack_xoxd": os.getenv("SLACK_XOXD_TOKEN", ""),
-    "slack_workspace_url": os.getenv("SLACK_WORKSPACE_URL", "https://redhat.enterprise.slack.com"),
+    "slack_workspace_url": "https://redhat.enterprise.slack.com",  # Hardcoded for Red Hat
     "logs_channel_id": os.getenv("LOGS_CHANNEL_ID", ""),
 }
 
