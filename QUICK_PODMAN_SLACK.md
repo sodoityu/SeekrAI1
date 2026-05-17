@@ -18,14 +18,14 @@ cd /path/to/SeekrAI1
 # Step 1: Update .mcp.json with YOUR tokens
 nano .mcp.json
 # Replace "your-xoxc-token-here" with your actual xoxc token
-# Replace "your-xoxd-token-here" with your actual xoxd token
+# Replace "your-xoxd-YOUR-SESSION-TOKEN-HERE-here" with your actual xoxd token
 # Save and exit (Ctrl+O, Ctrl+X)
 
 # Step 2: Start Slack MCP server on host
 podman run -d \
   --name slack-mcp \
   -e SLACK_XOXC_TOKEN='xoxc-YOUR-ACTUAL-TOKEN' \
-  -e SLACK_XOXD_TOKEN='xoxd-YOUR-ACTUAL-TOKEN' \
+  -e SLACK_XOXD_TOKEN='xoxd-YOUR-SESSION-TOKEN-HERE-ACTUAL-TOKEN' \
   -e MCP_TRANSPORT=stdio \
   quay.io/redhat-ai-tools/slack-mcp
 
@@ -98,8 +98,8 @@ podman rm unified-search
 podman run -d \
   --network=host \
   --name unified-search \
-  -e SLACK_XOXC_TOKEN='xoxc-3016034988151-...' \
-  -e SLACK_XOXD_TOKEN='xoxd-5GTKCd9yBXeiOE...' \
+  -e SLACK_XOXC_TOKEN='xoxc-YOUR-WORKSPACE-ID-YOUR-TOKEN...' \
+  -e SLACK_XOXD_TOKEN='xoxd-YOUR-SESSION-TOKEN-HERE...' \
   -e JIRA_URL='https://your-jira.atlassian.net' \
   -e JIRA_USERNAME='your-email@company.com' \
   -e JIRA_API_TOKEN='ATATT3xFfGF0...' \
@@ -150,7 +150,7 @@ open http://localhost:5500
 # On other PC:
 podman run -d --name slack-mcp \
   -e SLACK_XOXC_TOKEN='xoxc-...' \
-  -e SLACK_XOXD_TOKEN='xoxd-...' \
+  -e SLACK_XOXD_TOKEN='xoxd-YOUR-SESSION-TOKEN-HERE...' \
   quay.io/redhat-ai-tools/slack-mcp
 
 podman run -d --network=host --name unified-search \

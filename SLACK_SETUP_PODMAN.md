@@ -49,7 +49,7 @@ podman run -d \
    podman run -d \
      --name slack-mcp \
      -e SLACK_XOXC_TOKEN='your-xoxc-token' \
-     -e SLACK_XOXD_TOKEN='your-xoxd-token' \
+     -e SLACK_XOXD_TOKEN='your-xoxd-YOUR-SESSION-TOKEN-HERE' \
      quay.io/redhat-ai-tools/slack-mcp
    ```
 
@@ -87,8 +87,8 @@ Pass all tokens as environment variables:
 podman run -d \
   --network=host \
   --name unified-search \
-  -e SLACK_XOXC_TOKEN='xoxc-3016034988151-...' \
-  -e SLACK_XOXD_TOKEN='xoxd-5GTKCd9yBXeiOE...' \
+  -e SLACK_XOXC_TOKEN='xoxc-YOUR-WORKSPACE-ID-YOUR-TOKEN...' \
+  -e SLACK_XOXD_TOKEN='xoxd-YOUR-SESSION-TOKEN-HERE...' \
   -e JIRA_URL='https://your-jira.atlassian.net' \
   -e JIRA_USERNAME='your-email@company.com' \
   -e JIRA_API_TOKEN='ATATT3xFfGF0...' \
@@ -116,8 +116,8 @@ cd /path/to/SeekrAI1
 # Create .saved_credentials.json
 cat > .saved_credentials.json <<EOF
 {
-  "slack_xoxc": "xoxc-3016034988151-...",
-  "slack_xoxd": "xoxd-5GTKCd9yBXeiOE...",
+  "slack_xoxc": "xoxc-YOUR-WORKSPACE-ID-YOUR-TOKEN...",
+  "slack_xoxd": "xoxd-YOUR-SESSION-TOKEN-HERE...",
   "jira_url": "https://your-jira.atlassian.net",
   "jira_username": "your-email@company.com",
   "jira_api_token": "ATATT3xFfGF0...",
@@ -149,8 +149,8 @@ cat > .mcp.json <<EOF
         "quay.io/redhat-ai-tools/slack-mcp"
       ],
       "env": {
-        "SLACK_XOXC_TOKEN": "xoxc-3016034988151-...",
-        "SLACK_XOXD_TOKEN": "xoxd-5GTKCd9yBXeiOE...",
+        "SLACK_XOXC_TOKEN": "xoxc-YOUR-WORKSPACE-ID-YOUR-TOKEN...",
+        "SLACK_XOXD_TOKEN": "xoxd-YOUR-SESSION-TOKEN-HERE...",
         "SLACK_WORKSPACE_URL": "https://redhat-internal.slack.com",
         "MCP_TRANSPORT": "stdio"
       }
@@ -175,8 +175,8 @@ EOF
 # Start Slack MCP server (on host, not in container)
 podman run -d \
   --name slack-mcp \
-  -e SLACK_XOXC_TOKEN='xoxc-3016034988151-...' \
-  -e SLACK_XOXD_TOKEN='xoxd-5GTKCd9yBXeiOE...' \
+  -e SLACK_XOXC_TOKEN='xoxc-YOUR-WORKSPACE-ID-YOUR-TOKEN...' \
+  -e SLACK_XOXD_TOKEN='xoxd-YOUR-SESSION-TOKEN-HERE...' \
   -e MCP_TRANSPORT=stdio \
   quay.io/redhat-ai-tools/slack-mcp
 
@@ -223,7 +223,7 @@ open http://localhost:5500
 ```bash
 # Test Slack Web API directly
 curl -H "Authorization: Bearer xoxc-YOUR-TOKEN" \
-  --cookie "d=xoxd-YOUR-TOKEN" \
+  --cookie "d=xoxd-YOUR-SESSION-TOKEN-HERE-TOKEN" \
   "https://slack.com/api/search.messages?query=test&count=5"
 ```
 
@@ -309,7 +309,7 @@ chcon -Rt svirt_sandbox_file_t .mcp.json .saved_credentials.json
 # 1. Start Slack MCP on host
 podman run -d --name slack-mcp \
   -e SLACK_XOXC_TOKEN='xoxc-...' \
-  -e SLACK_XOXD_TOKEN='xoxd-...' \
+  -e SLACK_XOXD_TOKEN='xoxd-YOUR-SESSION-TOKEN-HERE...' \
   quay.io/redhat-ai-tools/slack-mcp
 
 # 2. Run unified search with host network
@@ -327,7 +327,7 @@ open http://localhost:5500
 ```bash
 podman run -d --network=host --name unified-search \
   -e SLACK_XOXC_TOKEN='xoxc-...' \
-  -e SLACK_XOXD_TOKEN='xoxd-...' \
+  -e SLACK_XOXD_TOKEN='xoxd-YOUR-SESSION-TOKEN-HERE...' \
   -e JIRA_URL='https://jira.atlassian.net' \
   -e JIRA_USERNAME='user@company.com' \
   -e JIRA_API_TOKEN='ATATT...' \

@@ -22,7 +22,7 @@
 ```bash
 podman run -d --network=host --name unified-search \
   -e SLACK_XOXC_TOKEN='xoxc-YOUR-TOKEN' \
-  -e SLACK_XOXD_TOKEN='xoxd-YOUR-TOKEN' \
+  -e SLACK_XOXD_TOKEN='xoxd-YOUR-SESSION-TOKEN-HERE-TOKEN' \
   -e JIRA_API_TOKEN='ATATT-YOUR-TOKEN' \
   unified-search:latest
 ```
@@ -77,7 +77,7 @@ podman run -d --network=host --name unified-search \
        "slack": {
          "env": {
            "SLACK_XOXC_TOKEN": "xoxc-YOUR-TOKEN",
-           "SLACK_XOXD_TOKEN": "xoxd-YOUR-TOKEN"
+           "SLACK_XOXD_TOKEN": "xoxd-YOUR-SESSION-TOKEN-HERE-TOKEN"
          }
        }
      }
@@ -144,7 +144,7 @@ podman rm unified-search
 # Restart with environment variables
 podman run -d --network=host --name unified-search \
   -e SLACK_XOXC_TOKEN='xoxc-YOUR-ACTUAL-TOKEN' \
-  -e SLACK_XOXD_TOKEN='xoxd-YOUR-ACTUAL-TOKEN' \
+  -e SLACK_XOXD_TOKEN='xoxd-YOUR-SESSION-TOKEN-HERE-ACTUAL-TOKEN' \
   -e JIRA_URL='https://issues.redhat.com' \
   -e JIRA_USERNAME='your-email@redhat.com' \
   -e JIRA_API_TOKEN='ATATT-YOUR-TOKEN' \
@@ -188,7 +188,7 @@ podman exec unified-search env | grep -E "SLACK|JIRA|SFDC"
 **If you see:**
 ```
 SLACK_XOXC_TOKEN=xoxc-...
-SLACK_XOXD_TOKEN=xoxd-...
+SLACK_XOXD_TOKEN=xoxd-YOUR-SESSION-TOKEN-HERE...
 ```
 
 **Then:** Environment variables are being used! ✅
@@ -208,7 +208,7 @@ podman exec unified-search cat /app/.saved_credentials.json
 ```json
 {
   "slack_xoxc": "xoxc-...",
-  "slack_xoxd": "xoxd-..."
+  "slack_xoxd": "xoxd-YOUR-SESSION-TOKEN-HERE..."
 }
 ```
 
@@ -251,7 +251,7 @@ If you have **multiple** sources, the app uses this priority:
 ```bash
 podman run -d --network=host --name unified-search \
   -e SLACK_XOXC_TOKEN='xoxc-...' \
-  -e SLACK_XOXD_TOKEN='xoxd-...' \
+  -e SLACK_XOXD_TOKEN='xoxd-YOUR-SESSION-TOKEN-HERE...' \
   -e JIRA_API_TOKEN='ATATT...' \
   unified-search:latest
 ```
@@ -340,7 +340,7 @@ You need:
 ```bash
 podman run -d --network=host --name unified-search \
   -e SLACK_XOXC_TOKEN='xoxc-...' \
-  -e SLACK_XOXD_TOKEN='xoxd-...' \
+  -e SLACK_XOXD_TOKEN='xoxd-YOUR-SESSION-TOKEN-HERE...' \
   unified-search:latest
 ```
 

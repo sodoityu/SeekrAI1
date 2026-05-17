@@ -1,0 +1,66 @@
+#!/bin/bash
+# One-step Podman setup - TEMPLATE FILE
+# Copy this to RUN_WITH_MY_TOKENS.sh and replace with YOUR tokens
+#
+# Usage:
+#   1. Copy: cp RUN_WITH_MY_TOKENS.sh.example RUN_WITH_MY_TOKENS.sh
+#   2. Edit: nano RUN_WITH_MY_TOKENS.sh
+#   3. Replace all YOUR-*-TOKEN placeholders with your actual tokens
+#   4. Run: ./RUN_WITH_MY_TOKENS.sh
+
+set -e
+
+echo "======================================================================"
+echo "🚀 Starting Unified Search with Podman"
+echo "======================================================================"
+echo ""
+
+# Stop and remove old container if exists
+echo "📦 Cleaning up old container..."
+podman stop unified-search 2>/dev/null || true
+podman rm unified-search 2>/dev/null || true
+
+echo ""
+echo "🐳 Starting container with your credentials..."
+echo ""
+
+podman run -d \
+  --network=host \
+  --name unified-search \
+  -e SLACK_XOXC_TOKEN='YOUR-SLACK-XOXC-TOKEN-HERE' \
+  -e SLACK_XOXD_TOKEN='YOUR-SLACK-XOXD-TOKEN-HERE' \
+  -e SLACK_WORKSPACE_URL='https://your-workspace.slack.com' \
+  -e JIRA_URL='https://your-company.atlassian.net' \
+  -e JIRA_EMAIL='your-email@company.com' \
+  -e JIRA_USERNAME='your-email@company.com' \
+  -e JIRA_API_TOKEN='YOUR-JIRA-API-TOKEN-HERE' \
+  -e RH_API_OFFLINE_TOKEN='YOUR-REDHAT-OFFLINE-TOKEN-HERE' \
+  unified-search:latest
+
+echo ""
+echo "======================================================================"
+echo "✅ Container started successfully!"
+echo "======================================================================"
+echo ""
+echo "🌐 Open in browser:"
+echo "   http://localhost:5500"
+echo ""
+echo "📊 Check status:"
+echo "   podman ps"
+echo ""
+echo "📜 View logs:"
+echo "   podman logs -f unified-search"
+echo ""
+echo "🛑 Stop container:"
+echo "   podman stop unified-search"
+echo ""
+
+# Wait a bit and show logs
+sleep 3
+echo "📜 Container logs:"
+echo "----------------------------------------------------------------------"
+podman logs unified-search
+echo "----------------------------------------------------------------------"
+echo ""
+echo "✅ Ready! Open http://localhost:5500 and search!"
+echo ""

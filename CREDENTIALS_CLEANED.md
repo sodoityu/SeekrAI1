@@ -13,8 +13,8 @@ This tool is now safe to push to public GitHub. All personal credentials have be
 **Before:**
 ```json
 {
-  "SLACK_XOXC_TOKEN": "xoxc-3016034988151-...",
-  "SLACK_XOXD_TOKEN": "xoxd-5GTKCd9yBXeiOEyvK...",
+  "SLACK_XOXC_TOKEN": "xoxc-YOUR-WORKSPACE-ID-YOUR-TOKEN...",
+  "SLACK_XOXD_TOKEN": "xoxd-YOUR-SESSION-TOKEN-HERE...",
   "LOGS_CHANNEL_ID": "C0AKQ7SD0RZ",
   "JIRA_USERNAME": "Jacob Yu",
   "JIRA_API_TOKEN": "ATATT3xFfGF0cH1lxjl38VNvP-..."
@@ -25,7 +25,7 @@ This tool is now safe to push to public GitHub. All personal credentials have be
 ```json
 {
   "SLACK_XOXC_TOKEN": "your-xoxc-token-here",
-  "SLACK_XOXD_TOKEN": "your-xoxd-token-here",
+  "SLACK_XOXD_TOKEN": "your-xoxd-YOUR-SESSION-TOKEN-HERE-here",
   "LOGS_CHANNEL_ID": "YOUR_CHANNEL_ID",
   "JIRA_USERNAME": "Your Name",
   "JIRA_API_TOKEN": "your-jira-api-token-here"

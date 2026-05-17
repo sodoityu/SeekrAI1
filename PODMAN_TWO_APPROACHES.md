@@ -57,8 +57,8 @@ Successfully tagged localhost/unified-search:latest
 podman run -d \
   --network=host \
   --name unified-search \
-  -e SLACK_XOXC_TOKEN='xoxc-3016034988151-7970959557637-...' \
-  -e SLACK_XOXD_TOKEN='xoxd-5GTKCd9yBXeiOEyvK...' \
+  -e SLACK_XOXC_TOKEN='xoxc-YOUR-WORKSPACE-ID-YOUR-TOKEN...' \
+  -e SLACK_XOXD_TOKEN='xoxd-YOUR-SESSION-TOKEN-HERE...' \
   -e JIRA_URL='https://issues.redhat.com' \
   -e JIRA_USERNAME='your-email@redhat.com' \
   -e JIRA_API_TOKEN='ATATT3xFfGF0cH1lxjl38VNvP-...' \
@@ -156,7 +156,7 @@ podman run -d \
   --network=host \
   --name unified-search \
   -e SLACK_XOXC_TOKEN='NEW-xoxc-token' \
-  -e SLACK_XOXD_TOKEN='NEW-xoxd-token' \
+  -e SLACK_XOXD_TOKEN='NEW-xoxd-YOUR-SESSION-TOKEN-HERE' \
   -e JIRA_API_TOKEN='NEW-jira-token' \
   -e SFDC_SESSION_ID='NEW-sfdc-session' \
   unified-search:latest
@@ -214,8 +214,8 @@ nano .mcp.json
         "quay.io/redhat-ai-tools/slack-mcp"
       ],
       "env": {
-        "SLACK_XOXC_TOKEN": "xoxc-3016034988151-7970959557637-...",
-        "SLACK_XOXD_TOKEN": "xoxd-5GTKCd9yBXeiOEyvK...",
+        "SLACK_XOXC_TOKEN": "xoxc-YOUR-WORKSPACE-ID-YOUR-TOKEN...",
+        "SLACK_XOXD_TOKEN": "xoxd-YOUR-SESSION-TOKEN-HERE...",
         "SLACK_WORKSPACE_URL": "https://redhat-internal.slack.com",
         "MCP_TRANSPORT": "stdio"
       }
@@ -243,8 +243,8 @@ nano .mcp.json
 # Create credentials file
 cat > .saved_credentials.json <<'EOF'
 {
-  "slack_xoxc": "xoxc-3016034988151-7970959557637-...",
-  "slack_xoxd": "xoxd-5GTKCd9yBXeiOEyvK...",
+  "slack_xoxc": "xoxc-YOUR-WORKSPACE-ID-YOUR-TOKEN...",
+  "slack_xoxd": "xoxd-YOUR-SESSION-TOKEN-HERE...",
   "jira_url": "https://issues.redhat.com",
   "jira_username": "your-email@redhat.com",
   "jira_api_token": "ATATT3xFfGF0cH1lxjl38VNvP-...",
@@ -262,8 +262,8 @@ chmod 600 .saved_credentials.json
 ```bash
 podman run -d \
   --name slack-mcp \
-  -e SLACK_XOXC_TOKEN='xoxc-3016034988151-7970959557637-...' \
-  -e SLACK_XOXD_TOKEN='xoxd-5GTKCd9yBXeiOEyvK...' \
+  -e SLACK_XOXC_TOKEN='xoxc-YOUR-WORKSPACE-ID-YOUR-TOKEN...' \
+  -e SLACK_XOXD_TOKEN='xoxd-YOUR-SESSION-TOKEN-HERE...' \
   -e MCP_TRANSPORT=stdio \
   quay.io/redhat-ai-tools/slack-mcp
 ```
@@ -440,7 +440,7 @@ podman exec unified-search env | grep SLACK
 
 # Should show your tokens
 # SLACK_XOXC_TOKEN=xoxc-...
-# SLACK_XOXD_TOKEN=xoxd-...
+# SLACK_XOXD_TOKEN=xoxd-YOUR-SESSION-TOKEN-HERE...
 ```
 
 **"Container exits immediately"**
@@ -489,7 +489,7 @@ chmod 600 .saved_credentials.json
 ```bash
 podman run -d --network=host --name unified-search \
   -e SLACK_XOXC_TOKEN='xoxc-...' \
-  -e SLACK_XOXD_TOKEN='xoxd-...' \
+  -e SLACK_XOXD_TOKEN='xoxd-YOUR-SESSION-TOKEN-HERE...' \
   -e JIRA_URL='https://issues.redhat.com' \
   -e JIRA_USERNAME='user@redhat.com' \
   -e JIRA_API_TOKEN='ATATT...' \
@@ -503,7 +503,7 @@ podman run -d --network=host --name unified-search \
 # Start MCP server
 podman run -d --name slack-mcp \
   -e SLACK_XOXC_TOKEN='xoxc-...' \
-  -e SLACK_XOXD_TOKEN='xoxd-...' \
+  -e SLACK_XOXD_TOKEN='xoxd-YOUR-SESSION-TOKEN-HERE...' \
   quay.io/redhat-ai-tools/slack-mcp
 
 # Start unified search

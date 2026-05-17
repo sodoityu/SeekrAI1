@@ -46,7 +46,7 @@ export RH_API_OFFLINE_TOKEN="your-offline-token"
 
 # Slack Credentials
 export SLACK_XOXC_TOKEN="xoxc-..."
-export SLACK_XOXD_TOKEN="xoxd-..."
+export SLACK_XOXD_TOKEN="xoxd-YOUR-SESSION-TOKEN-HERE..."
 export SLACK_WORKSPACE_URL="https://redhat.enterprise.slack.com"
 export LOGS_CHANNEL_ID="C0AKQ7SD0RZ"
 

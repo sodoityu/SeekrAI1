@@ -371,7 +371,7 @@ RH_API_OFFLINE_TOKEN=your_redhat_offline_token
 
 # Slack
 SLACK_XOXC_TOKEN=xoxc-your-token-here
-SLACK_XOXD_TOKEN=xoxd-your-token-here
+SLACK_XOXD_TOKEN=xoxd-YOUR-SESSION-TOKEN-HERE-token-here
 ```
 
 Load in `unified_search.py`:

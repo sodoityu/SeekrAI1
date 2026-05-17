@@ -86,7 +86,7 @@ podman run -p 5500:5500 \
   -e JIRA_EMAIL='your-email@redhat.com' \
   -e JIRA_API_TOKEN='your-jira-token' \
   -e SLACK_XOXC_TOKEN='xoxc-...' \
-  -e SLACK_XOXD_TOKEN='xoxd-...' \
+  -e SLACK_XOXD_TOKEN='xoxd-YOUR-SESSION-TOKEN-HERE...' \
   -e SFDC_SESSION_ID='00D...' \
   -e SFDC_INSTANCE_URL='https://redhat.my.salesforce.com' \
   unified-search:latest

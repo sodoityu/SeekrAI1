@@ -56,7 +56,7 @@ Complete guide to obtain and configure tokens for Jira, Slack, SFDC, and KCS.
 ```javascript
 // Run this in browser console while on Slack
 document.cookie.split(';').forEach(c => console.log(c.trim()))
-// Look for: d=xoxd-... and copy the value
+// Look for: d=xoxd-YOUR-SESSION-TOKEN-HERE... and copy the value
 ```
 
 ### Configuration
@@ -66,14 +66,14 @@ document.cookie.split(';').forEach(c => console.log(c.trim()))
 2. Open http://localhost:5500
 3. Click ⚙️ Settings
 4. Paste tokens:
-   - Slack xoxc Token: `xoxc-3016034988151-...`
-   - Slack xoxd Token: `xoxd-5GTKCd9yBXeiOE...`
+   - Slack xoxc Token: `xoxc-YOUR-WORKSPACE-ID-YOUR-TOKEN...`
+   - Slack xoxd Token: `xoxd-YOUR-SESSION-TOKEN-HERE...`
 5. Click 💾 Save & Remember
 
 **Option B: Environment Variables**
 ```bash
-export SLACK_XOXC_TOKEN="xoxc-3016034988151-..."
-export SLACK_XOXD_TOKEN="xoxd-5GTKCd9yBXeiOE..."
+export SLACK_XOXC_TOKEN="xoxc-YOUR-WORKSPACE-ID-YOUR-TOKEN..."
+export SLACK_XOXD_TOKEN="xoxd-YOUR-SESSION-TOKEN-HERE..."
 ```
 
 **Option C: Edit .mcp.json**
@@ -82,8 +82,8 @@ export SLACK_XOXD_TOKEN="xoxd-5GTKCd9yBXeiOE..."
   "mcpServers": {
     "slack": {
       "env": {
-        "SLACK_XOXC_TOKEN": "xoxc-3016034988151-...",
-        "SLACK_XOXD_TOKEN": "xoxd-5GTKCd9yBXeiOE..."
+        "SLACK_XOXC_TOKEN": "xoxc-YOUR-WORKSPACE-ID-YOUR-TOKEN...",
+        "SLACK_XOXD_TOKEN": "xoxd-YOUR-SESSION-TOKEN-HERE..."
       }
     }
   }
