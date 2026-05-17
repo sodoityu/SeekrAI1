@@ -314,11 +314,52 @@ podman build -t unified-search:latest .
 ├── Dockerfile                     # Container build instructions
 ├── RUN_WITH_MY_TOKENS.sh.example  # Template for Podman run script
 ├── .env.example                   # Template for environment variables
+├── .mcp.json                      # MCP server config (OPTIONAL - see below)
 ├── templates_unified/             # HTML templates for web UI
 │   ├── index.html                 # Main search page
 │   └── settings.html              # Credentials settings page
 └── README.md                      # This file
 ```
+
+---
+
+## 🤔 What about .mcp.json?
+
+**TL;DR: You don't need .mcp.json to run the web UI!**
+
+The `.mcp.json` file is **optional** and only needed if you want to use these tools with **Claude Desktop** or other MCP clients (like Claude Code CLI).
+
+### Two ways to use this tool:
+
+**1. Web UI (this tool) - NO .mcp.json needed:**
+```bash
+python3 unified_search.py
+# Open http://localhost:5500
+# Search through browser interface
+```
+
+**2. Claude Desktop integration - .mcp.json required:**
+```json
+// .mcp.json configures MCP servers for Claude Desktop
+{
+  "mcpServers": {
+    "slack": { ... },
+    "mcp-atlassian": { ... }
+  }
+}
+```
+
+**When to use .mcp.json:**
+- ✅ You want to search Jira/Slack from Claude Desktop chat
+- ✅ You're using Claude Code CLI with MCP tools
+- ✅ You want AI assistants to have direct API access
+
+**When you DON'T need .mcp.json:**
+- ❌ Running the web UI at http://localhost:5500
+- ❌ Using Podman container method
+- ❌ Just want a browser-based search interface
+
+**For this Unified Search web tool, ignore .mcp.json completely!**
 
 ---
 
