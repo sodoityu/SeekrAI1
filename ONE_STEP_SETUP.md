@@ -6,10 +6,21 @@
 
 ## 🚀 Quick Start
 
-### Method 1: Use the Script (Easiest)
+### Step 1: Build the Image (First Time Only)
 
 ```bash
 cd /path/to/SeekrAI1
+podman build -t unified-search:latest .
+```
+
+**This takes ~3 minutes and installs:**
+- Flask (web framework)
+- Requests (HTTP library)
+- MCP SDK (for Slack search)
+
+### Step 2: Use the Script
+
+```bash
 ./RUN_WITH_MY_TOKENS.sh
 ```
 
