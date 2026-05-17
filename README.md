@@ -26,21 +26,25 @@ All from one simple web interface at `http://localhost:5500`
                                ▼
 ┌─────────────────────────────────────────────────────────────┐
 │              Flask App (unified_search.py)                  │
-│  ┌────────────┐  ┌────────────┐  ┌──────────────────────┐  │
-│  │Jira Search │  │SFDC Search │  │ Slack Search (MCP)   │  │
-│  └─────┬──────┘  └─────┬──────┘  └──────────┬───────────┘  │
-└────────┼───────────────┼────────────────────┼──────────────┘
-         │               │                    │
-         ▼               ▼                    ▼
-┌──────────────┐ ┌──────────────┐  ┌──────────────────────┐
-│ Jira API     │ │ Red Hat API  │  │ Slack MCP Server     │
-│ (REST)       │ │ (SSO+SFDC)   │  │ (slack_search_       │
-│              │ │              │  │  standalone.py)      │
-└──────────────┘ └──────────────┘  └──────────────────────┘
+│  ┌────────────┐  ┌─────────────────┐  ┌─────────────────┐  │
+│  │Jira Search │  │  SFDC/KCS       │  │ Slack Search    │  │
+│  │            │  │  Search         │  │ (MCP)           │  │
+│  └─────┬──────┘  └────────┬────────┘  └────────┬────────┘  │
+└────────┼──────────────────┼────────────────────┼───────────┘
+         │                  │                    │
+         ▼                  ▼                    ▼
+┌──────────────┐  ┌──────────────────┐  ┌──────────────────┐
+│ Jira API     │  │ Red Hat API      │  │ Slack MCP Server │
+│ (REST)       │  │ (SSO + SFDC/KCS) │  │ (slack_search_   │
+│              │  │                  │  │  standalone.py)  │
+└──────────────┘  └──────────────────┘  └──────────────────┘
 ```
 
 **Key Components:**
 - **unified_search.py** - Main Flask web server (port 5500)
+- **Jira Search** - Search Jira tickets/issues via Atlassian REST API
+- **SFDC/KCS Search** - Search Red Hat Knowledge Centered Service articles via Red Hat SSO API
+- **Slack Search** - Search messages across all channels via MCP integration
 - **slack_search_standalone.py** - Slack MCP server integration
 - **templates_unified/** - HTML templates for web UI
 - **Credentials** - Stored in Flask session or environment variables
