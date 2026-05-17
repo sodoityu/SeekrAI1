@@ -49,6 +49,7 @@ poetry.lock
 *.log
 logs/
 *.txt
+!requirements.txt
 
 # Test files
 test_*.txt
