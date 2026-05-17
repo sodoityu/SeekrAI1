@@ -497,16 +497,34 @@ View logs in terminal for detailed error messages.
 
 ## Documentation
 
+### 📚 Main Guides
+
 | Document | Description |
 |----------|-------------|
 | [README.md](README.md) | This file - Usage and installation |
 | [INSTALLATION_GUIDE.md](INSTALLATION_GUIDE.md) | Complete setup for all deployment methods |
+| [TOKEN_SETUP_GUIDE.md](TOKEN_SETUP_GUIDE.md) | **How to get tokens for Jira, Slack, SFDC, KCS** |
 | [QUICK_START.md](QUICK_START.md) | Answers to: tools needed, env vars, binary options |
-| [SETUP.md](SETUP.md) | Detailed credential setup guide |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | Technical architecture and design |
-| [KCS_FEATURE.md](KCS_FEATURE.md) | KCS integration documentation |
+| [QUICK_INSTALL.md](QUICK_INSTALL.md) | Fastest installation methods (binary/Docker/source) |
+
+### 🐳 Podman/Docker Guides
+
+| Document | Description |
+|----------|-------------|
+| [PODMAN_GUIDE.md](PODMAN_GUIDE.md) | Complete Podman tutorial with examples |
+| [PODMAN_TWO_APPROACHES.md](PODMAN_TWO_APPROACHES.md) | **Detailed comparison: 1 vs 2 containers** |
+| [QUICK_PODMAN_SLACK.md](QUICK_PODMAN_SLACK.md) | Quick fix for Slack in Podman |
+| [SLACK_SETUP_PODMAN.md](SLACK_SETUP_PODMAN.md) | Why Slack needs special setup in containers |
+
+### 📖 Feature Documentation
+
+| Document | Description |
+|----------|-------------|
 | [PERSISTENT_CREDENTIALS.md](PERSISTENT_CREDENTIALS.md) | Auto-save credentials feature |
 | [SLACK_FIX_SUMMARY.md](SLACK_FIX_SUMMARY.md) | Direct Slack links implementation |
+| [SELF_CONTAINED_STRUCTURE.md](SELF_CONTAINED_STRUCTURE.md) | Self-contained folder structure |
+| [FILES_STRUCTURE.md](FILES_STRUCTURE.md) | File organization guide |
+| [CREDENTIALS_CLEANED.md](CREDENTIALS_CLEANED.md) | How credentials were cleaned for GitHub |
 
 ---
 

@@ -74,20 +74,14 @@ podman run --network=host \
 
 ---
 
-## 📝 Why Both Are Needed?
+## 📝 Two Approaches Available
 
-**UI Settings (xoxc/xoxd tokens):**
-- Used by Slack Web API method
-- First attempt for search
+| Approach | Containers Needed | Complexity | Setup Time |
+|----------|------------------|------------|------------|
+| **Environment Variables** (recommended) | **1 container** | ⭐ Simple | 2 minutes |
+| **Config Files** (.mcp.json) | **2 containers** | ⭐⭐⭐ Complex | 5 minutes |
 
-**MCP Config (.mcp.json):**
-- Used by Slack MCP server method
-- Fallback if Web API fails
-- Provides channel info for direct links
-
-**Host Network Mode:**
-- Allows container to talk to MCP server on host
-- Required for MCP method to work
+**See PODMAN_TWO_APPROACHES.md for complete comparison and detailed steps!**
 
 ---
 
