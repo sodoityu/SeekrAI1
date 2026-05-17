@@ -1,113 +1,372 @@
-# Ask SRE - Semantic Search for OpenShift SRE Documentation
+# Unified Search - Web UI for Jira, SFDC, and Slack
 
-Intelligent semantic search over OpenShift ops-sop SRE documentation using AI-powered embeddings. Integrates with Claude, Gemini, and other AI assistants through the Model Context Protocol (MCP).
+Search across **Jira**, **SFDC/KCS**, and **Slack** simultaneously from a single web interface.
 
-## 🎯 Overview
+## 🎯 What is this?
 
-Ask SRE indexes the entire OpenShift ops-sop documentation repository (776+ markdown files, 8,487 searchable chunks) and provides intelligent semantic search through vector embeddings. This allows AI assistants to find relevant SRE documentation, alerts, troubleshooting guides, and best practices using natural language queries.
+A Flask web application that provides unified search across:
+- **Jira** - Search issues and tickets
+- **SFDC/KCS** - Search Red Hat Knowledge Centered Service articles
+- **Slack** - Search messages across all channels
 
-### Key Features
+All from one simple web interface at `http://localhost:5500`
 
-- **Semantic Search**: Find relevant documentation using natural language queries
-- **Comprehensive Coverage**: Indexes 8,487+ document chunks across all ops-sop categories
-- **ROSA KCS Integration**: Search official Red Hat Customer Portal KCS solutions
-- **Managed OpenShift Docs**: Search official ROSA/OSD/HCP documentation from GitHub
-- **Rich Metadata**: Results include file paths, categories, severity, service names, code blocks, and more
-- **MCP Compatible**: Works with Claude Desktop, Gemini CLI, and other MCP clients
-- **Fast & Local**: All processing happens locally with no external API calls required
+---
 
-### Documentation Sources
+## 🏗️ Architecture
 
-Ask SRE provides a **unified search** across multiple documentation sources through the `search_sre_docs` tool. Results from all sources are combined and ranked by semantic similarity:
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     Browser (localhost:5500)                │
+│                   ┌─────────────────────┐                   │
+│                   │   Search Interface  │                   │
+│                   └──────────┬──────────┘                   │
+└──────────────────────────────┼──────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────┐
+│              Flask App (unified_search.py)                  │
+│  ┌────────────┐  ┌────────────┐  ┌──────────────────────┐  │
+│  │Jira Search │  │SFDC Search │  │ Slack Search (MCP)   │  │
+│  └─────┬──────┘  └─────┬──────┘  └──────────┬───────────┘  │
+└────────┼───────────────┼────────────────────┼──────────────┘
+         │               │                    │
+         ▼               ▼                    ▼
+┌──────────────┐ ┌──────────────┐  ┌──────────────────────┐
+│ Jira API     │ │ Red Hat API  │  │ Slack MCP Server     │
+│ (REST)       │ │ (SSO+SFDC)   │  │ (slack_search_       │
+│              │ │              │  │  standalone.py)      │
+└──────────────┘ └──────────────┘  └──────────────────────┘
+```
 
-1. **Local ops-sop Documentation**
-   - Internal SRE runbooks, alerts, and troubleshooting guides
-   - 8,487+ document chunks from 776+ markdown files
-   - Hypershift, v4, security, best practices, and more
-   - Source identifier: `local_ops_sop`
+**Key Components:**
+- **unified_search.py** - Main Flask web server (port 5500)
+- **slack_search_standalone.py** - Slack MCP server integration
+- **templates_unified/** - HTML templates for web UI
+- **Credentials** - Stored in Flask session or environment variables
 
-2. **ROSA KCS Solutions** (optional)
-   - Official Red Hat Knowledge Centered Service (KCS) solutions
-   - Verified solutions from Red Hat support engineers
-   - Installation, security, troubleshooting, and configuration guides
-   - Source identifier: `redhat_customer_portal`
-   - See [REDHAT_API_EMBEDDINGS.md](REDHAT_API_EMBEDDINGS.md) for setup
+---
 
-3. **Managed OpenShift Documentation** (optional)
-   - Official ROSA (Red Hat OpenShift Service on AWS) documentation
-   - OSD (OpenShift Dedicated) documentation
-   - HCP (Hosted Control Planes) documentation
-   - Architecture guides, cluster administration, installation guides
-   - Sourced from https://github.com/openshift/openshift-docs
-   - Source identifier: `managed_openshift_docs`
+## 📦 Method 1: Using Podman (Recommended)
 
-All results include a `source` field to identify their origin, allowing AI assistants to distinguish between internal ops-sop, official ROSA KCS, and managed OpenShift documentation.
+**Fastest way to run - no local dependencies needed!**
 
-
-## 📚 Documentation
-
-**New to Ask SRE?** Check out the comprehensive documentation:
-
-👉 **[Getting Started Guide](docs/GETTING_STARTED.md)** - Complete setup and testing guide (~30 minutes)
-
-### Additional Documentation
-
-- **[Embeddings Setup](docs/EMBEDDINGS_SETUP.md)** - Detailed embeddings database setup
-- **[Metadata Reference](docs/METADATA_REFERENCE.md)** - Metadata schema and structure
-- **[Evaluation System](docs/EVALUATION_SYSTEM.md)** - Complete RAG evaluation architecture
-- **[CI Setup](docs/CI_SETUP.md)** - Continuous integration configuration
-- **[Documentation Index](docs/README.md)** - Complete documentation index
-
-## 📋 Prerequisites
-
-- Python 3.13 or higher
-- Poetry (Python package manager)
-- Git
-- ~1GB disk space for models and database
-
-## Evaluation and testing
-
-The `ask-sre` command includes the capability to evaluate the RAG system quality using **Claude Agent SDK** (response generator) and **OpenAI GPT-4** (LLM judge). 
-
-**Architecture**: The evaluation uses a two-phase approach:
-1. **Phase 1** - Claude Agent SDK queries each question, calls `search_sre_docs` MCP tool, and generates answers
-2. **Phase 2** - OpenAI evaluates responses using three metrics via the Ragas framework:
-   - [Answer Accuracy](https://docs.ragas.io/en/stable/concepts/metrics/available_metrics/nvidia_metrics/#answer-accuracy) - How well the response matches the reference
-   - [Context Relevance](https://docs.ragas.io/en/stable/concepts/metrics/available_metrics/nvidia_metrics/#context-relevance) - How relevant retrieved docs are
-   - [Response Groundedness](https://docs.ragas.io/en/stable/concepts/metrics/available_metrics/nvidia_metrics/#response-groundedness) - Whether the response is supported by docs
-
-📖 **See [Evaluation System Documentation](docs/EVALUATION_SYSTEM.md) for complete architecture and usage guide**
-
-You can run the evaluation suite using the included Golden Dataset with the following command:
+### Step 1: Build the image
 
 ```bash
-ask-sre evaluate --golden-dataset data/golden.jsonl --output out/result.json
+podman build -t unified-search:latest .
 ```
 
-## Compare Embedding Model Performance
-| Model |Vector Size |Index Time | NaiveRAG || **MiniRAG** | |
-|-------|----------|----------|----------|----------|----------|----------|
-| | | | acc↑ | context↑ |  acc↑ | context↑ |
-| all-MiniLM-L6-v2 | 384 | 7min | 0.7188 |0.6423 |to-do |to-do |
-| all-mpnet-base-v2 | 768 | 16min | 0.7432 | 0.7011 | to-do | to-do |
-| sentence-t5-base |768 | 24min | 0.7969 | 0.8125 | to-do | to-do |
-| Qwen3-Embedding-0.6B |1024 |  |  |  | to-do | to-do |
-| Qwen3-Embedding-4B |2560 |  |  |  | to-do | to-do |
+### Step 2: Get your credentials
 
-Answer Accuracy Metrics : https://docs.ragas.io/en/stable/concepts/metrics/available_metrics/nvidia_metrics/#answer-accuracy 
-```
-0 → The response is inaccurate or does not address the same question as the reference.
-2 → The response partially align with the reference.
-4 → The response exactly aligns with the reference.
+See [How to Get Credentials](#-how-to-get-credentials) section below.
+
+### Step 3: Create your run script
+
+```bash
+cp RUN_WITH_MY_TOKENS.sh.example RUN_WITH_MY_TOKENS.sh
+nano RUN_WITH_MY_TOKENS.sh  # Edit and add your tokens
 ```
 
-Context Relevance Metrics https://docs.ragas.io/en/stable/concepts/metrics/available_metrics/nvidia_metrics/#context-relevance
+Replace these placeholders with your actual credentials:
+- `YOUR-SLACK-XOXC-TOKEN-HERE`
+- `YOUR-SLACK-XOXD-TOKEN-HERE`
+- `your-email@redhat.com`
+- `YOUR-JIRA-API-TOKEN-HERE`
+- `YOUR-REDHAT-OFFLINE-TOKEN-HERE`
+
+### Step 4: Run the container
+
+```bash
+./RUN_WITH_MY_TOKENS.sh
 ```
-0 → The retrieved contexts are not relevant to the user's query at all.
-1 → The contexts are partially relevant.
-2 → The contexts are completely relevant.
+
+### Step 5: Open in browser
+
+Open `http://localhost:5500` and start searching!
+
+### Useful Podman commands
+
+```bash
+# View logs
+podman logs -f unified-search
+
+# Stop container
+podman stop unified-search
+
+# Restart container
+podman start unified-search
+
+# Remove container
+podman rm unified-search
 ```
-# Trigger Konflux build
-# Test with fixed secret
-# Test after PaC config merge
-# Pipeline configured
+
+---
+
+## 🛠️ Method 2: Local Installation
+
+### Prerequisites
+
+- **Python 3.8+** (Python 3.13+ recommended)
+- **pip** package manager
+
+### Installation Steps
+
+#### **For Fedora Linux:**
+
+```bash
+# Install Python 3.13
+sudo dnf install python3.13 python3.13-pip
+
+# Clone the repository (if not already)
+cd /path/to/unified-search
+
+# Install dependencies
+pip3.13 install -r requirements.txt
+```
+
+#### **For macOS:**
+
+```bash
+# Install Python 3.13 with Homebrew
+brew install python@3.13
+
+# Install dependencies
+pip3.13 install -r requirements.txt
+```
+
+#### **For Ubuntu/Debian:**
+
+```bash
+# Install Python 3.13
+sudo apt update
+sudo apt install python3.13 python3.13-pip
+
+# Install dependencies
+pip3.13 install -r requirements.txt
+```
+
+### Setup Credentials
+
+Create a `.env` file from the template:
+
+```bash
+cp .env.example .env
+nano .env  # Edit and add your credentials
+```
+
+Load the environment variables:
+
+```bash
+source .env
+```
+
+### Run the Application
+
+```bash
+python3 unified_search.py
+```
+
+Open `http://localhost:5500` in your browser.
+
+---
+
+## 🔑 How to Get Credentials
+
+### 1. Jira Credentials
+
+**JIRA_EMAIL:**
+- Your Red Hat email address (e.g., `yourname@redhat.com`)
+
+**JIRA_API_TOKEN:**
+1. Go to https://id.atlassian.com/manage-profile/security/api-tokens
+2. Click **Create API token**
+3. Give it a name (e.g., "Unified Search")
+4. Copy the token
+
+### 2. SFDC/KCS Credentials
+
+**RH_API_OFFLINE_TOKEN:**
+1. Go to https://access.redhat.com/management/api
+2. Click **Generate Token** under "Offline Access"
+3. Copy the offline token
+
+### 3. Slack Credentials
+
+**SLACK_XOXC_TOKEN and SLACK_XOXD_TOKEN:**
+
+1. Open Slack in your browser (https://redhat.enterprise.slack.com)
+2. Open Developer Tools (F12)
+3. Go to **Application** → **Cookies** → `https://redhat.enterprise.slack.com`
+4. Find and copy:
+   - Cookie named `d` → This is your **SLACK_XOXD_TOKEN**
+   - Cookie named `d-s` starts with `xoxc-` → This is your **SLACK_XOXC_TOKEN**
+
+**Alternative method (from browser storage):**
+1. Open Developer Tools (F12) → **Console** tab
+2. Type: `JSON.parse(localStorage.localConfig_v2)["teams"]`
+3. Find your workspace and copy the `token` (starts with `xoxc-`)
+
+---
+
+## 🎨 Using the Web Interface
+
+1. **Open** `http://localhost:5500`
+
+2. **Configure credentials** (if not using environment variables):
+   - Click **Settings** (top right corner)
+   - Enter your Jira, SFDC, and Slack credentials
+   - Click **Save**
+
+3. **Search**:
+   - Enter your search query
+   - Select which services to search (Jira, SFDC, Slack)
+   - Click **Search**
+
+4. **Results**:
+   - Results from all selected services appear in separate tabs
+   - Click on any result to view details
+   - For Jira: Direct links to issues
+   - For SFDC: Links to KCS articles
+   - For Slack: Message content with channel and timestamp
+
+---
+
+## 🔧 Troubleshooting
+
+### Slack returns 0 results
+
+**Problem:** Slack search works in browser but returns 0 results in container.
+
+**Solution:**
+- Make sure you're using `--network=host` flag with Podman
+- Verify MCP SDK is installed: `pip list | grep mcp`
+- Check Slack tokens are correct (xoxc and xoxd)
+- Verify tokens in Settings page match environment variables
+
+### Jira authentication fails
+
+**Problem:** "Unauthorized" or "401" errors from Jira.
+
+**Solution:**
+- Verify your JIRA_EMAIL is correct
+- Regenerate your Jira API token from https://id.atlassian.com/manage-profile/security/api-tokens
+- Make sure there are no extra spaces in email or token
+
+### SFDC/KCS search fails
+
+**Problem:** "Token expired" or "Invalid token" errors.
+
+**Solution:**
+- Regenerate your offline token from https://access.redhat.com/management/api
+- The token format should be a long string (100+ characters)
+- Make sure you copied the entire token
+
+### Port 5500 already in use
+
+**Problem:** "Address already in use" error.
+
+**Solution:**
+```bash
+# Find what's using port 5500
+sudo lsof -i :5500
+
+# Kill the process or use a different port
+# Edit unified_search.py and change the port at the bottom:
+# app.run(debug=True, host='0.0.0.0', port=5500)
+```
+
+### Container won't start
+
+**Problem:** Podman container exits immediately.
+
+**Solution:**
+```bash
+# Check logs
+podman logs unified-search
+
+# Common issues:
+# - Missing environment variables
+# - Python syntax errors
+# - Port conflicts
+
+# Rebuild the image
+podman build -t unified-search:latest .
+./RUN_WITH_MY_TOKENS.sh
+```
+
+---
+
+## 📁 File Structure
+
+```
+.
+├── unified_search.py              # Main Flask application
+├── slack_search_standalone.py     # Slack MCP server integration
+├── requirements.txt               # Python dependencies
+├── Dockerfile                     # Container build instructions
+├── RUN_WITH_MY_TOKENS.sh.example  # Template for Podman run script
+├── .env.example                   # Template for environment variables
+├── templates_unified/             # HTML templates for web UI
+│   ├── index.html                 # Main search page
+│   └── settings.html              # Credentials settings page
+└── README.md                      # This file
+```
+
+---
+
+## 🔐 Security Notes
+
+1. **Never commit credentials** to Git:
+   - `RUN_WITH_MY_TOKENS.sh` is in `.gitignore`
+   - `.env` is in `.gitignore`
+   - `.saved_credentials.json` is in `.gitignore`
+
+2. **Credentials priority**:
+   - Environment variables (Podman `-e` flags or `source .env`)
+   - UI Settings page (stored in Flask session)
+   - Use environment variables for Podman, UI settings for local development
+
+3. **Token security**:
+   - Slack tokens are sensitive - treat like passwords
+   - Jira API tokens can be revoked anytime at Atlassian
+   - SFDC offline tokens should be regenerated periodically
+
+---
+
+## 🚀 Quick Start Summary
+
+**Podman (5 minutes):**
+```bash
+podman build -t unified-search:latest .
+cp RUN_WITH_MY_TOKENS.sh.example RUN_WITH_MY_TOKENS.sh
+nano RUN_WITH_MY_TOKENS.sh  # Add your tokens
+./RUN_WITH_MY_TOKENS.sh
+# Open http://localhost:5500
+```
+
+**Local (10 minutes):**
+```bash
+pip3 install -r requirements.txt
+cp .env.example .env
+nano .env  # Add your credentials
+source .env
+python3 unified_search.py
+# Open http://localhost:5500
+```
+
+---
+
+## 📝 License
+
+Internal Red Hat tool - not for public distribution.
+
+---
+
+## 🤝 Contributing
+
+Report issues or suggestions to the development team.
+
+---
+
+**Questions?** Check the Troubleshooting section or reach out to the team!
