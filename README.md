@@ -107,46 +107,72 @@ podman rm unified-search
 
 ### Prerequisites
 
-- **Python 3.8+** (Python 3.13+ recommended)
-- **pip** package manager
+- **Python 3.12+** (Python 3.13+ recommended)
+- **Poetry** (Python package manager) - Recommended OR **pip**
 
-### Installation Steps
+### Option A: Poetry (Recommended)
+
+Poetry is the official dependency manager for this project.
 
 #### **For Fedora Linux:**
 
 ```bash
-# Install Python 3.13
+# Install Python 3.13 and Poetry
 sudo dnf install python3.13 python3.13-pip
+pip3.13 install poetry
 
 # Clone the repository (if not already)
-cd /path/to/unified-search
+cd /path/to/ask-sre
 
-# Install dependencies (includes Flask, Requests, and MCP SDK)
-pip3.13 install -r requirements.txt
+# Install all dependencies with Poetry
+poetry install
+
+# Run the application
+poetry run python finaltoolMay18/unified_search.py
 ```
 
 #### **For macOS:**
 
 ```bash
-# Install Python 3.13 with Homebrew
-brew install python@3.13
+# Install Python 3.13 and Poetry with Homebrew
+brew install python@3.13 poetry
 
-# Install dependencies (includes Flask, Requests, and MCP SDK)
-pip3.13 install -r requirements.txt
+# Install dependencies
+poetry install
+
+# Run the application
+poetry run python finaltoolMay18/unified_search.py
 ```
 
 #### **For Ubuntu/Debian:**
 
 ```bash
-# Install Python 3.13
+# Install Python 3.13 and Poetry
 sudo apt update
 sudo apt install python3.13 python3.13-pip
+pip3.13 install poetry
 
-# Install dependencies (includes Flask, Requests, and MCP SDK)
-pip3.13 install -r requirements.txt
+# Install dependencies
+poetry install
+
+# Run the application
+poetry run python finaltoolMay18/unified_search.py
 ```
 
-**Note:** The `requirements.txt` includes:
+### Option B: pip + requirements.txt (Alternative)
+
+If you prefer not to use Poetry:
+
+```bash
+# Install dependencies directly (includes Flask, Requests, and MCP SDK)
+pip3 install -r finaltoolMay18/requirements.txt
+
+# Run the application (from the finaltoolMay18 directory)
+cd finaltoolMay18
+python3 unified_search.py
+```
+
+**Note:** The dependencies include:
 - `flask>=2.3.0` - Web framework
 - `requests>=2.31.0` - HTTP library for API calls
 - `mcp>=1.0.0` - Model Context Protocol SDK for Slack integration
@@ -170,7 +196,15 @@ source .env
 
 ### Run the Application
 
+**With Poetry (recommended):**
 ```bash
+# From the ask-sre parent directory
+poetry run python finaltoolMay18/unified_search.py
+```
+
+**With pip:**
+```bash
+# From the finaltoolMay18 directory
 python3 unified_search.py
 ```
 
@@ -393,8 +427,20 @@ nano RUN_WITH_MY_TOKENS.sh  # Add your tokens
 # Open http://localhost:5500
 ```
 
-**Local (10 minutes):**
+**Local with Poetry (10 minutes):**
 ```bash
+# From the ask-sre parent directory
+poetry install
+cp .env.example .env
+nano .env  # Add your credentials
+source .env
+poetry run python finaltoolMay18/unified_search.py
+# Open http://localhost:5500
+```
+
+**Local with pip (10 minutes):**
+```bash
+# From the finaltoolMay18 directory
 pip3 install -r requirements.txt
 cp .env.example .env
 nano .env  # Add your credentials
