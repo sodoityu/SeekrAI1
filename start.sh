@@ -39,7 +39,7 @@ cd "$SCRIPT_DIR"
 if netstat -tuln 2>/dev/null | grep -q ":5500 "; then
     echo -e "${GREEN}✅ Unified Search already running on port 5500${NC}"
 else
-    nohup python unified_search.py > unified_search.log 2>&1 &
+    nohup python3 unified_search.py > unified_search.log 2>&1 &
     echo -e "${GREEN}✅ Unified Search started (logs: unified_search.log)${NC}"
     sleep 5
 fi

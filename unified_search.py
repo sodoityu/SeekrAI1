@@ -249,8 +249,16 @@ def extract_text_from_adf(adf_content: Dict) -> str:
     return ' '.join(text_parts)[:200]  # Limit to 200 chars
 
 
-def search_jira(query: str, max_results: int = 20, config: Dict = None) -> Dict:
-    """Search Jira issues"""
+def search_jira(query: str, max_results: int = 20, config: Dict = None, created_after: str = None, created_before: str = None, custom_jql: str = None, search_logic: str = 'AND') -> Dict:
+    """Search Jira issues with optional date filtering
+
+    Args:
+        query: Search query text
+        max_results: Maximum number of results to return
+        config: Configuration dictionary with credentials
+        created_after: Filter issues created after this date (YYYY-MM-DD format)
+        created_before: Filter issues created before this date (YYYY-MM-DD format)
+    """
     if config is None:
         config = {}
     jira_email = config.get("jira_email", "")
@@ -270,16 +278,64 @@ def search_jira(query: str, max_results: int = 20, config: Dict = None) -> Dict:
         "Accept": "application/json"
     }
 
-    # Simple JQL query
-    jql = f'text ~ "{query}" ORDER BY updated DESC'
+    # Use custom JQL if provided, otherwise generate automatically
+    if custom_jql:
+        jql = custom_jql
+        app.logger.info(f"🔍 Jira Custom JQL: {jql}")
+        # Don't modify custom JQL - use it exactly as provided
+    else:
+        # Enhanced JQL query with multiple search strategies
+        # 1. Check if query is a Jira key (e.g., OHSS-54143, SRE-1234)
+        if '-' in query and query.replace('-', '').replace(' ', '').isalnum():
+            # Looks like a Jira key, search by key first
+            jql = f'key = "{query.strip()}" OR text ~ "{query}"'
+            print(f"🔍 Jira JQL (key search): {jql}")
+        else:
+            # Regular text search with better word matching
+            # Split query into words and search for any word match
+            words = query.split()
+            if len(words) > 1:
+                # Multi-word search: use AND or OR based on search_logic parameter
+                separator = f' {search_logic} '
+                word_conditions = separator.join([f'text ~ "{word}"' for word in words if len(word) > 2])
+                jql = f'({word_conditions})'
+                print(f"🔍 Jira JQL (multi-word, {search_logic} logic): {jql}")
+            else:
+                # Single word search
+                jql = f'text ~ "{query}"'
+                print(f"🔍 Jira JQL (single word): {jql}")
+
+        # Add date filters if provided
+        date_filters = []
+        if created_after:
+            date_filters.append(f'created >= "{created_after}"')
+        if created_before:
+            date_filters.append(f'created <= "{created_before}"')
+
+        if date_filters:
+            jql = f'{jql} AND {" AND ".join(date_filters)}'
+            print(f"🔍 Jira JQL (with date filter): {jql}")
+
+        # ORDER BY: Order by created date (newest first) - only for auto-generated JQL
+        # We'll sort OHSS tickets to the top in Python after getting results
+        jql = f'{jql} ORDER BY created DESC'
+
+    # End of if/else block for JQL generation
 
     params = {
         "jql": jql,
         "maxResults": max_results,
-        "fields": "key,summary,description,status,priority,updated,project"
+        "fields": "key,summary,description,status,priority,updated,created,project"
     }
 
     try:
+        # Debug: Log the actual URL being called
+        from urllib.parse import urlencode
+        encoded_params = urlencode(params)
+        debug_url = f"{jira_base_url}/search/jql?{encoded_params}"
+        app.logger.info(f"🌐 Jira API URL (first 200 chars): {debug_url[:200]}...")
+        app.logger.info(f"📏 JQL length: {len(jql)} characters")
+
         response = requests.get(
             f"{jira_base_url}/search/jql",
             headers=headers,
@@ -287,8 +343,13 @@ def search_jira(query: str, max_results: int = 20, config: Dict = None) -> Dict:
             auth=(jira_email, jira_token),
             timeout=30
         )
+
+        # Debug: Log response status
+        response_data = response.json()
+        app.logger.info(f"📊 Jira API Response: status={response.status_code}, results={len(response_data.get('issues', []))}")
+
         response.raise_for_status()
-        data = response.json()
+        data = response_data
 
         issues = []
         for issue in data.get('issues', []):
@@ -298,24 +359,52 @@ def search_jira(query: str, max_results: int = 20, config: Dict = None) -> Dict:
             if isinstance(description, dict):
                 description = extract_text_from_adf(description)
 
+            # Handle None values - Jira returns None for missing fields, not {}
+            project = fields.get('project') or {}
+            project_key = project.get('key', 'N/A')
+
+            status = fields.get('status') or {}
+            status_name = status.get('name', 'N/A')
+
+            priority = fields.get('priority') or {}
+            priority_name = priority.get('name', 'N/A')
+
             issues.append({
                 'key': issue['key'],
-                'project': fields.get('project', {}).get('key', 'N/A'),
+                'project': project_key,
                 'summary': fields.get('summary', 'N/A'),
-                'status': fields.get('status', {}).get('name', 'N/A'),
-                'priority': fields.get('priority', {}).get('name', 'N/A'),
+                'status': status_name,
+                'priority': priority_name,
                 'description': description,
-                'url': f"https://redhat.atlassian.net/browse/{issue['key']}"
+                'created': fields.get('created', 'N/A'),
+                'updated': fields.get('updated', 'N/A'),
+                'url': f"https://redhat.atlassian.net/browse/{issue['key']}",
+                'is_ohss': project_key == 'OHSS'  # Flag for sorting
             })
+
+        app.logger.info(f"✅ Parsed {len(issues)} issues from Jira API")
+
+        # Sort: OHSS tickets first, then by created date (newest first)
+        # Use stable sort: first by date, then by project
+        try:
+            issues.sort(key=lambda x: x['created'], reverse=True)  # Step 1: newest first
+            issues.sort(key=lambda x: 0 if x['is_ohss'] else 1)    # Step 2: OHSS first (stable sort)
+            app.logger.info(f"✅ Sorted {len(issues)} issues successfully")
+        except Exception as sort_err:
+            app.logger.error(f"❌ Sorting failed: {sort_err}")
+            # Don't fail - just return unsorted
 
         return {
             "issues": issues,
-            "total": len(issues)  # Use actual count of issues returned
+            "total": len(issues),  # Use actual count of issues returned
+            "jql": jql  # Return the JQL query for display in UI
         }
 
     except Exception as e:
-        print(f"Jira search error: {e}")
-        return {"issues": [], "total": 0, "error": str(e)}
+        app.logger.error(f"❌ Jira search error: {e}")
+        import traceback
+        app.logger.error(traceback.format_exc())
+        return {"issues": [], "total": 0, "error": str(e), "jql": ""}
 
 
 # ============================================================================
@@ -599,7 +688,8 @@ def search_slack(query: str, max_results: int = 100, channels: List[str] = None,
 # Unified Search
 # ============================================================================
 
-def search_all(query: str, max_results_per_source: int = 20, slack_channels: List[str] = None, config: Dict = None) -> Dict:
+def search_all(query: str, max_results_per_source: int = 20, slack_channels: List[str] = None, config: Dict = None,
+               jira_created_after: str = None, jira_created_before: str = None, custom_jql: str = None, search_logic: str = 'AND') -> Dict:
     """Search all sources in parallel"""
     try:
         if config is None:
@@ -607,7 +697,7 @@ def search_all(query: str, max_results_per_source: int = 20, slack_channels: Lis
 
         with ThreadPoolExecutor(max_workers=5) as executor:
             # Submit all searches concurrently with config
-            jira_future = executor.submit(search_jira, query, max_results_per_source, config)
+            jira_future = executor.submit(search_jira, query, max_results_per_source, config, jira_created_after, jira_created_before, custom_jql, search_logic)
             sfdc_future = executor.submit(search_sfdc, query, max_results_per_source, config)
             slack_future = executor.submit(search_slack, query, max_results_per_source, slack_channels, config)
             kcs_future = executor.submit(search_kcs, query, max_results_per_source, config)
@@ -868,8 +958,14 @@ def search():
         query = data.get('query', '').strip()
         max_results = int(data.get('max_results', 20))
         slack_channels = data.get('slack_channels', None)  # Optional channel filter for Slack
+        jira_created_after = data.get('jira_created_after', None)  # Optional date filter for Jira
+        jira_created_before = data.get('jira_created_before', None)  # Optional date filter for Jira
+        custom_jql = data.get('custom_jql', None)  # Optional custom JQL for Jira
+        jira_search_logic = data.get('jira_search_logic', 'AND')  # Search logic: AND or OR (default: AND)
 
-        print(f"\n🔍 Search Request: query='{query}', max_results={max_results}")
+        print(f"\n🔍 Search Request: query='{query}', max_results={max_results}, "
+              f"jira_dates={jira_created_after or 'N/A'} to {jira_created_before or 'N/A'}, "
+              f"custom_jql={'YES' if custom_jql else 'NO'}")
 
         if not query:
             return jsonify({
@@ -885,7 +981,7 @@ def search():
         config = get_config()
 
         # Search all sources
-        results = search_all(query, max_results, slack_channels, config)
+        results = search_all(query, max_results, slack_channels, config, jira_created_after, jira_created_before, custom_jql, jira_search_logic)
 
         print(f"✅ Search completed: Jira={results.get('jira', {}).get('total', 0)}, "
               f"SFDC={results.get('sfdc', {}).get('total', 0)}, "

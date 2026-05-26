@@ -419,6 +419,23 @@
             transform: translateX(5px);
         }
 
+        /* OHSS ticket highlighting */
+        .result-item.ohss-highlight {
+            border-left: 4px solid #ffd700;
+            background: linear-gradient(90deg, rgba(255, 215, 0, 0.1) 0%, #252525 10%);
+        }
+
+        .result-item.ohss-highlight:hover {
+            border-color: #ffd700;
+        }
+
+        .badge-ohss {
+            background: linear-gradient(135deg, #ffd700 0%, #ffed4e 100%);
+            color: #000;
+            font-weight: bold;
+            box-shadow: 0 2px 4px rgba(255, 215, 0, 0.3);
+        }
+
         .result-title {
             font-weight: 600;
             margin-bottom: 8px;
@@ -561,6 +578,123 @@
         .filter-toggle:hover {
             background: #ee0000;
             color: white;
+        }
+
+        /* Date Input */
+        .date-input {
+            background: #2a2a2a;
+            color: #fff;
+            border: 1px solid #444;
+            border-radius: 6px;
+            padding: 8px 12px;
+            font-size: 14px;
+            outline: none;
+            transition: all 0.3s;
+        }
+
+        .date-input:focus {
+            border-color: #ee0000;
+            background: #333;
+        }
+
+        .date-input::-webkit-calendar-picker-indicator {
+            filter: invert(1);
+            cursor: pointer;
+        }
+
+        /* Mode Toggle Buttons */
+        .mode-toggle-btn {
+            background: transparent;
+            color: #999;
+            border: 2px solid #444;
+            padding: 8px 20px;
+            border-radius: 20px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+            transition: all 0.3s;
+        }
+
+        .mode-toggle-btn:hover {
+            border-color: #ee0000;
+            color: #ee0000;
+        }
+
+        .mode-toggle-btn.active {
+            background: #ee0000;
+            color: white;
+            border-color: #ee0000;
+        }
+
+        /* Custom JQL Input */
+        .jql-input {
+            background: #1a1a1a;
+            color: #ffd700;
+            border: 2px solid #444;
+            border-radius: 6px;
+            padding: 12px 15px;
+            font-size: 14px;
+            font-family: 'Courier New', monospace;
+            outline: none;
+            resize: vertical;
+            transition: all 0.3s;
+            width: 100%;
+        }
+
+        .jql-input:focus {
+            border-color: #ee0000;
+            background: #252525;
+        }
+
+        .jql-input::placeholder {
+            color: #666;
+            font-family: 'Courier New', monospace;
+        }
+
+        /* Search Logic Select */
+        .search-logic-select {
+            background: #2a2a2a;
+            color: #fff;
+            border: 2px solid #444;
+            border-radius: 6px;
+            padding: 6px 12px;
+            font-size: 12px;
+            outline: none;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .search-logic-select:hover {
+            border-color: #ee0000;
+        }
+
+        .search-logic-select:focus {
+            border-color: #ee0000;
+            background: #333;
+        }
+
+        /* JQL Display */
+        .jql-display {
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-left: 4px solid #ee0000;
+            border-radius: 6px;
+            padding: 12px 15px;
+            margin-bottom: 15px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            color: #ffd700;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        .jql-label {
+            color: #999;
+            font-size: 11px;
+            font-weight: 600;
+            margin-bottom: 5px;
+            display: block;
         }
 
         /* Empty State */
@@ -764,8 +898,27 @@
 
         <!-- Content Area -->
         <div class="content-area">
-            <!-- Search Box -->
-            <div class="search-container">
+            <!-- Search Mode Toggle -->
+            <div style="margin-bottom: 10px; display: flex; gap: 10px; align-items: center;">
+                <button class="mode-toggle-btn active" id="simpleSearchBtn" onclick="switchSearchMode('simple')">
+                    🔍 Simple Search
+                </button>
+                <button class="mode-toggle-btn" id="customJqlBtn" onclick="switchSearchMode('jql')">
+                    📋 Custom JQL
+                </button>
+
+                <!-- Search Logic Toggle (only for Simple Search) -->
+                <div id="searchLogicToggle" style="margin-left: auto; display: flex; gap: 10px; align-items: center;">
+                    <label style="font-size: 12px; color: #999;">Match:</label>
+                    <select id="searchLogic" class="search-logic-select">
+                        <option value="AND">ALL words (more relevant)</option>
+                        <option value="OR">ANY word (more results)</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Simple Search Box -->
+            <div class="search-container" id="simpleSearchContainer">
                 <input
                     type="text"
                     class="search-input"
@@ -778,11 +931,47 @@
                 </button>
             </div>
 
+            <!-- Custom JQL Search Box -->
+            <div class="search-container" id="customJqlContainer" style="display: none; flex-direction: column; gap: 10px;">
+                <div style="display: flex; flex-direction: column; gap: 5px;">
+                    <label style="font-size: 12px; color: #999; font-weight: 600;">📋 Enter Custom JQL Query:</label>
+                    <textarea
+                        class="jql-input"
+                        id="customJqlInput"
+                        placeholder='Example: textfields ~ "Splunk Alert" AND project = OHSS AND created >= "2026-05-01"'
+                        rows="3"
+                    ></textarea>
+                    <div style="font-size: 11px; color: #666; font-style: italic;">
+                        💡 Tip: Use <code style="background: #333; padding: 2px 5px; border-radius: 3px;">textfields ~</code> to search all text fields with exact phrase
+                    </div>
+                </div>
+                <button class="send-btn" onclick="performSearch()">
+                    ✈️ Search with Custom JQL
+                </button>
+            </div>
+
             <!-- Filter Section -->
             <button class="filter-toggle" onclick="toggleFilters()">
-                🔽 Show Filters (Slack Channels)
+                🔽 Show Filters (Jira Date Range & Slack Channels)
             </button>
             <div class="filter-section" id="filterSection">
+                <!-- Jira Date Filter -->
+                <h3>📅 Jira Date Range Filter</h3>
+                <div style="display: flex; gap: 15px; margin-bottom: 20px; flex-wrap: wrap;">
+                    <div style="flex: 1; min-width: 200px;">
+                        <label style="display: block; margin-bottom: 5px; font-size: 12px; color: #999;">Created After:</label>
+                        <input type="date" id="jiraDateFrom" class="date-input" style="width: 100%;">
+                    </div>
+                    <div style="flex: 1; min-width: 200px;">
+                        <label style="display: block; margin-bottom: 5px; font-size: 12px; color: #999;">Created Before:</label>
+                        <input type="date" id="jiraDateTo" class="date-input" style="width: 100%;">
+                    </div>
+                    <div style="display: flex; align-items: flex-end;">
+                        <button class="btn-secondary" onclick="clearJiraDateFilter()" style="padding: 8px 15px; white-space: nowrap;">Clear Dates</button>
+                    </div>
+                </div>
+
+                <!-- Slack Channel Filter -->
                 <h3>💬 Slack Channel Filter</h3>
                 <div class="channel-selector">
                     <input type="checkbox" id="ch_all" class="channel-checkbox" checked onchange="toggleAllChannels(this)">
@@ -816,6 +1005,32 @@
 
         let currentCategory = 'all';
         let availableChannels = [];
+        let searchMode = 'simple'; // 'simple' or 'jql'
+
+        // Switch search mode
+        function switchSearchMode(mode) {
+            searchMode = mode;
+
+            const simpleBtn = document.getElementById('simpleSearchBtn');
+            const customBtn = document.getElementById('customJqlBtn');
+            const simpleContainer = document.getElementById('simpleSearchContainer');
+            const customContainer = document.getElementById('customJqlContainer');
+            const searchLogicToggle = document.getElementById('searchLogicToggle');
+
+            if (mode === 'simple') {
+                simpleBtn.classList.add('active');
+                customBtn.classList.remove('active');
+                simpleContainer.style.display = 'flex';
+                customContainer.style.display = 'none';
+                searchLogicToggle.style.display = 'flex'; // Show logic toggle for simple search
+            } else {
+                simpleBtn.classList.remove('active');
+                customBtn.classList.add('active');
+                simpleContainer.style.display = 'none';
+                customContainer.style.display = 'flex';
+                searchLogicToggle.style.display = 'none'; // Hide logic toggle for custom JQL
+            }
+        }
 
         // Toggle filter section
         function toggleFilters() {
@@ -824,7 +1039,7 @@
 
             if (filterSection.classList.contains('show')) {
                 filterSection.classList.remove('show');
-                btn.textContent = '🔽 Show Filters (Slack Channels)';
+                btn.textContent = '🔽 Show Filters (Jira Date Range & Slack Channels)';
             } else {
                 filterSection.classList.add('show');
                 btn.textContent = '🔼 Hide Filters';
@@ -887,6 +1102,12 @@
             return selectedChannels.length > 0 ? selectedChannels : ['ALL'];
         }
 
+        // Clear Jira date filter
+        function clearJiraDateFilter() {
+            document.getElementById('jiraDateFrom').value = '';
+            document.getElementById('jiraDateTo').value = '';
+        }
+
         // Enter key to search
         document.getElementById('searchInput').addEventListener('keypress', function(e) {
             if (e.key === 'Enter') {
@@ -895,10 +1116,18 @@
         });
 
         async function performSearch() {
-            const query = document.getElementById('searchInput').value.trim();
+            let query, customJql = null;
+
+            // Get query based on search mode
+            if (searchMode === 'simple') {
+                query = document.getElementById('searchInput').value.trim();
+            } else {
+                customJql = document.getElementById('customJqlInput').value.trim();
+                query = customJql; // Use custom JQL as query
+            }
 
             if (!query) {
-                alert('Please enter a search query');
+                alert(searchMode === 'simple' ? 'Please enter a search query' : 'Please enter a JQL query');
                 return;
             }
 
@@ -919,16 +1148,33 @@
             try {
                 const selectedChannels = getSelectedChannels();
 
+                // Get Jira date filters (only for simple mode)
+                const jiraDateFrom = searchMode === 'simple' ? (document.getElementById('jiraDateFrom').value || null) : null;
+                const jiraDateTo = searchMode === 'simple' ? (document.getElementById('jiraDateTo').value || null) : null;
+
+                // Get search logic (AND/OR) for simple mode
+                const searchLogic = searchMode === 'simple' ? (document.getElementById('searchLogic').value || 'AND') : null;
+
+                const requestBody = {
+                    query: query,
+                    max_results: 100,
+                    slack_channels: selectedChannels.includes('ALL') ? null : selectedChannels,
+                    jira_created_after: jiraDateFrom,
+                    jira_created_before: jiraDateTo,
+                    jira_search_logic: searchLogic
+                };
+
+                // Add custom JQL flag if in JQL mode
+                if (searchMode === 'jql') {
+                    requestBody.custom_jql = customJql;
+                }
+
                 const response = await fetch('/search', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({
-                        query: query,
-                        max_results: 100,
-                        slack_channels: selectedChannels.includes('ALL') ? null : selectedChannels
-                    })
+                    body: JSON.stringify(requestBody)
                 });
 
                 const data = await response.json();
@@ -1194,6 +1440,9 @@
             const issues = searchResults.jira?.issues || [];
             if (issues.length === 0) return '';
 
+            // Get JQL if available
+            const jqlQuery = searchResults.jira?.jql || '';
+
             let html = `
                 <div class="results-section">
                     <div class="section-header">
@@ -1201,17 +1450,41 @@
                     </div>
             `;
 
-            issues.forEach(issue => {
+            // Display JQL query if available
+            if (jqlQuery) {
                 html += `
-                    <div class="result-item">
+                    <div class="jql-display">
+                        <span class="jql-label">📋 JQL QUERY:</span>
+                        ${escapeHtml(jqlQuery)}
+                    </div>
+                `;
+            }
+
+            issues.forEach(issue => {
+                // Highlight OHSS tickets
+                const isOHSS = issue.project === 'OHSS';
+                const ohssClass = isOHSS ? ' ohss-highlight' : '';
+                const ohssBadge = isOHSS ? '<span class="badge badge-ohss">⭐ OHSS</span>' : '';
+
+                // Format dates
+                const createdDate = issue.created ? new Date(issue.created).toLocaleDateString('en-US', {
+                    year: 'numeric',
+                    month: 'short',
+                    day: 'numeric'
+                }) : 'N/A';
+
+                html += `
+                    <div class="result-item${ohssClass}">
                         <div class="result-title">
                             <a href="${issue.url}" target="_blank">${issue.key}</a> - ${escapeHtml(issue.summary)}
                         </div>
                         <div class="result-summary">${escapeHtml(issue.description || 'No description')}</div>
                         <div class="result-meta">
+                            ${ohssBadge}
                             <span class="badge">${issue.status}</span>
                             <span class="badge">${issue.priority}</span>
-                            <span>${issue.project}</span>
+                            <span class="badge">${issue.project}</span>
+                            <span class="badge">📅 Created: ${createdDate}</span>
                         </div>
                     </div>
                 `;
