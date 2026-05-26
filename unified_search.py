@@ -388,6 +388,60 @@ def search_kcs(query: str, max_results: int = 20, config: Dict = None) -> Dict:
 
 
 # ============================================================================
+# SOP/Document Search Functions
+# ============================================================================
+
+# MCP Server configuration
+MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "http://localhost:8000")
+
+def search_sop(query: str, max_results: int = 20, config: Dict = None) -> Dict:
+    """Search SOP documents via MCP server"""
+    try:
+        # Ensure top_k is within valid range (1-10)
+        top_k = min(max(max_results, 1), 10)
+
+        # Call the MCP server's retrieve-sop endpoint
+        response = requests.post(
+            f"{MCP_SERVER_URL}/retrieve-sop",
+            json={
+                "issue_summary": query,
+                "top_k": top_k,
+                "parameters": {}
+            },
+            timeout=30,
+            headers={"Content-Type": "application/json"}
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        sops = []
+        if "results" in data:
+            for result in data["results"]:
+                sops.append({
+                    "id": result.get("id", "N/A"),
+                    "title": result.get("title", "No title"),
+                    "summary": result.get("summary", "No summary"),
+                    "score": result.get("score", 0),
+                    "url": f"{MCP_SERVER_URL}/sop-document/{result.get('id', '')}"
+                })
+
+        return {
+            "sops": sops,
+            "total": len(sops)
+        }
+
+    except requests.exceptions.ConnectionError:
+        return {
+            "sops": [],
+            "total": 0,
+            "error": "MCP server not running. Start it with: cd kush/mcp-server/mcp-server && ./start_server.sh"
+        }
+    except Exception as e:
+        print(f"SOP search error: {e}")
+        return {"sops": [], "total": 0, "error": str(e)}
+
+
+# ============================================================================
 # Slack Functions
 # ============================================================================
 
@@ -551,12 +605,13 @@ def search_all(query: str, max_results_per_source: int = 20, slack_channels: Lis
         if config is None:
             config = {}
 
-        with ThreadPoolExecutor(max_workers=4) as executor:
+        with ThreadPoolExecutor(max_workers=5) as executor:
             # Submit all searches concurrently with config
             jira_future = executor.submit(search_jira, query, max_results_per_source, config)
             sfdc_future = executor.submit(search_sfdc, query, max_results_per_source, config)
             slack_future = executor.submit(search_slack, query, max_results_per_source, slack_channels, config)
             kcs_future = executor.submit(search_kcs, query, max_results_per_source, config)
+            sop_future = executor.submit(search_sop, query, max_results_per_source, config)
 
             # Get results with error handling for each
             try:
@@ -583,11 +638,18 @@ def search_all(query: str, max_results_per_source: int = 20, slack_channels: Lis
                 print(f"❌ KCS search exception: {e}")
                 kcs_results = {"articles": [], "total": 0, "error": str(e)}
 
+            try:
+                sop_results = sop_future.result()
+            except Exception as e:
+                print(f"❌ SOP search exception: {e}")
+                sop_results = {"sops": [], "total": 0, "error": str(e)}
+
         return {
             "jira": jira_results,
             "sfdc": sfdc_results,
             "slack": slack_results,
             "kcs": kcs_results,
+            "sop": sop_results,
             "query": query
         }
     except Exception as e:
@@ -755,6 +817,39 @@ def clear_saved_credentials():
         }), 500
 
 
+@app.route('/api/sop-details', methods=['POST'])
+def get_sop_details():
+    """Get detailed SOP information including steps"""
+    try:
+        data = request.json
+        sop_id = data.get('sop_id')
+        query = data.get('query', 'troubleshooting')
+
+        if not sop_id:
+            return jsonify({"error": "sop_id is required"}), 400
+
+        # Call MCP server's /get-sop endpoint
+        response = requests.post(
+            f"{MCP_SERVER_URL}/get-sop",
+            json={
+                "issue_summary": query,
+                "top_k": 1,
+                "parameters": {}
+            },
+            timeout=30,
+            headers={"Content-Type": "application/json"}
+        )
+        response.raise_for_status()
+        sop_data = response.json()
+
+        return jsonify(sop_data)
+
+    except Exception as e:
+        error_msg = f"Error fetching SOP details: {str(e)}"
+        print(f"❌ {error_msg}")
+        return jsonify({"error": error_msg}), 500
+
+
 @app.route('/search', methods=['POST'])
 def search():
     """Handle unified search requests"""
@@ -766,7 +861,8 @@ def search():
                 "jira": {"issues": [], "total": 0},
                 "sfdc": {"cases": [], "total": 0},
                 "slack": {"messages": [], "total": 0, "channels": COMMON_SLACK_CHANNELS},
-                "kcs": {"articles": [], "total": 0}
+                "kcs": {"articles": [], "total": 0},
+                "sop": {"sops": [], "total": 0}
             }), 400
 
         query = data.get('query', '').strip()
@@ -781,7 +877,8 @@ def search():
                 "jira": {"issues": [], "total": 0},
                 "sfdc": {"cases": [], "total": 0},
                 "slack": {"messages": [], "total": 0, "channels": COMMON_SLACK_CHANNELS},
-                "kcs": {"articles": [], "total": 0}
+                "kcs": {"articles": [], "total": 0},
+                "sop": {"sops": [], "total": 0}
             })
 
         # Get config from session and pass it to search functions
@@ -793,7 +890,8 @@ def search():
         print(f"✅ Search completed: Jira={results.get('jira', {}).get('total', 0)}, "
               f"SFDC={results.get('sfdc', {}).get('total', 0)}, "
               f"Slack={results.get('slack', {}).get('total', 0)}, "
-              f"KCS={results.get('kcs', {}).get('total', 0)}")
+              f"KCS={results.get('kcs', {}).get('total', 0)}, "
+              f"SOP={results.get('sop', {}).get('total', 0)}")
 
         return jsonify(results)
 
@@ -808,7 +906,8 @@ def search():
             "jira": {"issues": [], "total": 0, "error": str(e)},
             "sfdc": {"cases": [], "total": 0, "error": str(e)},
             "slack": {"messages": [], "total": 0, "channels": COMMON_SLACK_CHANNELS, "error": str(e)},
-            "kcs": {"articles": [], "total": 0, "error": str(e)}
+            "kcs": {"articles": [], "total": 0, "error": str(e)},
+            "sop": {"sops": [], "total": 0, "error": str(e)}
         }), 500
 
 
@@ -816,16 +915,19 @@ if __name__ == '__main__':
     os.makedirs('templates_unified', exist_ok=True)
 
     print("=" * 70)
-    print(" 🔍 Unified Search - Jira + SFDC + Slack + KCS")
+    print(" 🔍 Unified Search - Jira + SFDC + Slack + KCS + SOP")
     print("=" * 70)
-    print("\n✨ Search all four systems with one query!\n")
+    print("\n✨ Search all five systems with one query!\n")
     print("Open your browser:")
     print("  👉 http://localhost:5500\n")
     print("Features:")
-    print("  • Parallel search across Jira, SFDC, Slack, and KCS")
+    print("  • Parallel search across Jira, SFDC, Slack, KCS, and SOP")
     print("  • Category filtering (show/hide each source)")
     print("  • Result counts in sidebar")
     print("  • Clean, unified interface\n")
+    print("Prerequisites:")
+    print("  • MCP Server for SOP search: cd kush/mcp-server/mcp-server && ./start_server.sh")
+    print("  • Set MCP_SERVER_URL env var (default: http://localhost:8000)\n")
     print("Press CTRL+C to stop")
     print("=" * 70 + "\n")
 

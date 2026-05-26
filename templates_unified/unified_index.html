@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Unified Search - Jira + SFDC + Slack</title>
+    <title>Unified Search - Jira + SFDC + Slack + KCS + SOP</title>
     <style>
         * {
             margin: 0;
@@ -716,6 +716,22 @@
         </div>
     </div>
 
+    <!-- SOP Details Modal -->
+    <div id="sopModal" class="modal">
+        <div class="modal-content" style="max-width: 900px;">
+            <div class="modal-header">
+                <h2 class="modal-title">📖 SOP Document Details</h2>
+                <button class="close-btn" onclick="closeSopModal()">&times;</button>
+            </div>
+            <div id="sopModalContent" style="max-height: 70vh; overflow-y: auto; padding: 20px;">
+                <div style="text-align: center; padding: 40px;">
+                    <div style="font-size: 40px;">⏳</div>
+                    <div>Loading SOP details...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Main Container -->
     <div class="main-container">
         <!-- Left Sidebar -->
@@ -739,6 +755,10 @@
             <button class="category-btn" onclick="showCategory('kcs')">
                 <span>KCS Articles</span>
                 <span class="category-count" id="count-kcs">0</span>
+            </button>
+            <button class="category-btn" onclick="showCategory('sop')">
+                <span>📖 SOP Documents</span>
+                <span class="category-count" id="count-sop">0</span>
             </button>
         </div>
 
@@ -779,7 +799,7 @@
                 <div class="empty-state" id="emptyState">
                     <div class="empty-state-icon">🔍</div>
                     <div class="empty-state-text">Enter a search query to get started</div>
-                    <div class="empty-state-hint">Search across Jira, SFDC, Slack, and KCS simultaneously</div>
+                    <div class="empty-state-hint">Search across Jira, SFDC, Slack, KCS, and SOP documents simultaneously</div>
                 </div>
             </div>
         </div>
@@ -790,7 +810,8 @@
             jira: { issues: [], total: 0 },
             sfdc: { cases: [], total: 0 },
             slack: { messages: [], total: 0 },
-            kcs: { articles: [], total: 0 }
+            kcs: { articles: [], total: 0 },
+            sop: { sops: [], total: 0 }
         };
 
         let currentCategory = 'all';
@@ -924,6 +945,16 @@
                 // Store results
                 searchResults = data;
 
+                // Debug: Log SOP results to console
+                console.log('🔍 Search results received:', {
+                    jira: data.jira?.total || 0,
+                    sfdc: data.sfdc?.total || 0,
+                    slack: data.slack?.total || 0,
+                    kcs: data.kcs?.total || 0,
+                    sop: data.sop?.total || 0
+                });
+                console.log('📖 SOP data:', data.sop);
+
                 // Populate channel filter if channels are available
                 if (data.slack && data.slack.channels) {
                     populateChannels(data.slack.channels);
@@ -952,13 +983,15 @@
             const sfdcCount = searchResults.sfdc?.total || 0;
             const slackCount = searchResults.slack?.total || 0;
             const kcsCount = searchResults.kcs?.total || 0;
-            const totalCount = jiraCount + sfdcCount + slackCount + kcsCount;
+            const sopCount = searchResults.sop?.total || 0;
+            const totalCount = jiraCount + sfdcCount + slackCount + kcsCount + sopCount;
 
             document.getElementById('count-all').textContent = totalCount;
             document.getElementById('count-sfdc').textContent = sfdcCount;
             document.getElementById('count-slack').textContent = slackCount;
             document.getElementById('count-jira').textContent = jiraCount;
             document.getElementById('count-kcs').textContent = kcsCount;
+            document.getElementById('count-sop').textContent = sopCount;
         }
 
         function showCategory(category) {
@@ -982,8 +1015,9 @@
             const hasSfdc = searchResults.sfdc?.cases?.length > 0;
             const hasSlack = searchResults.slack?.messages?.length > 0;
             const hasKcs = searchResults.kcs?.articles?.length > 0;
+            const hasSop = searchResults.sop?.sops?.length > 0;
 
-            if (!hasJira && !hasSfdc && !hasSlack && !hasKcs) {
+            if (!hasJira && !hasSfdc && !hasSlack && !hasKcs && !hasSop) {
                 container.innerHTML = `
                     <div class="empty-state">
                         <div class="empty-state-icon">😕</div>
@@ -1018,6 +1052,22 @@
             if (category === 'all' || category === 'jira') {
                 if (hasJira) {
                     html += renderJiraResults();
+                }
+            }
+
+            if (category === 'all' || category === 'sop') {
+                const hasSop = searchResults.sop?.sops?.length > 0;
+                console.log('📖 Checking SOP results:', {
+                    category: category,
+                    hasSop: hasSop,
+                    sopCount: searchResults.sop?.sops?.length || 0,
+                    sopData: searchResults.sop
+                });
+                if (hasSop) {
+                    console.log('✅ Rendering SOP results...');
+                    html += renderSopResults();
+                } else {
+                    console.log('❌ No SOP results to render');
                 }
             }
 
@@ -1200,11 +1250,201 @@
             return html;
         }
 
+        function renderSopResults() {
+            const sops = searchResults.sop?.sops || [];
+            if (sops.length === 0) return '';
+
+            let html = `
+                <div class="results-section">
+                    <div class="section-header">
+                        📖 SOP Documents - ${sops.length} Document${sops.length !== 1 ? 's' : ''}
+                    </div>
+            `;
+
+            sops.forEach(sop => {
+                // Truncate summary to 200 characters for better readability
+                const summary = sop.summary || 'No summary available';
+                const truncatedSummary = summary.length > 200
+                    ? summary.substring(0, 200) + '...'
+                    : summary;
+
+                // Calculate relevance level
+                const scorePercent = (sop.score * 100).toFixed(1);
+                let relevanceLabel = '🔴 Low';
+                let relevanceColor = '#ff4444';
+
+                if (sop.score >= 0.8) {
+                    relevanceLabel = '🟢 High';
+                    relevanceColor = '#00ff00';
+                } else if (sop.score >= 0.6) {
+                    relevanceLabel = '🟡 Medium';
+                    relevanceColor = '#ffaa00';
+                }
+
+                html += `
+                    <div class="result-item">
+                        <div class="result-title">
+                            <a href="${sop.url}" target="_blank" style="font-weight: bold; color: #ee0000;">
+                                ${escapeHtml(sop.title)}
+                            </a>
+                        </div>
+                        <div class="result-summary" style="margin: 8px 0; line-height: 1.5;">
+                            ${escapeHtml(truncatedSummary)}
+                        </div>
+                        <div class="result-meta">
+                            <span class="badge">📄 ${sop.id}</span>
+                            <span class="badge" style="background: ${relevanceColor}; color: #000;">
+                                ${relevanceLabel} (${scorePercent}%)
+                            </span>
+                            <a href="javascript:void(0)" onclick="showSopDetails('${sop.id}')" class="result-link" style="margin-left: 10px;">
+                                📖 View Full Document →
+                            </a>
+                        </div>
+                    </div>
+                `;
+            });
+
+            html += '</div>';
+            return html;
+        }
+
         function escapeHtml(text) {
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
         }
+
+        // ============================================================================
+        // SOP Details Modal Functions
+        // ============================================================================
+
+        async function showSopDetails(sopId) {
+            console.log('📖 Opening SOP details for:', sopId);
+
+            // Show modal
+            document.getElementById('sopModal').classList.add('show');
+
+            // Show loading state
+            document.getElementById('sopModalContent').innerHTML = `
+                <div style="text-align: center; padding: 40px;">
+                    <div style="font-size: 40px;">⏳</div>
+                    <div>Loading SOP details...</div>
+                </div>
+            `;
+
+            try {
+                // Get the query from the last search
+                const query = document.getElementById('searchInput').value || 'troubleshooting';
+
+                // Call backend API to get SOP details
+                const response = await fetch('/api/sop-details', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        sop_id: sopId,
+                        query: query
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+
+                const data = await response.json();
+
+                // Render SOP details
+                renderSopDetails(data);
+
+            } catch (error) {
+                console.error('Error loading SOP details:', error);
+                document.getElementById('sopModalContent').innerHTML = `
+                    <div class="error-message">
+                        <strong>Error loading SOP details:</strong> ${error.message}
+                    </div>
+                `;
+            }
+        }
+
+        function renderSopDetails(sop) {
+            // Fix the GitHub URL: replace mcs-ops with ops-sop and main with master
+            let githubUrl = sop.source_url || '';
+            if (githubUrl) {
+                githubUrl = githubUrl
+                    .replace('github.com/openshift/mcs-ops', 'github.com/openshift/ops-sop')
+                    .replace('/blob/main/', '/blob/master/');
+            }
+
+            let html = `
+                <div style="line-height: 1.6;">
+                    <h3 style="color: #ee0000; margin-bottom: 10px;">${escapeHtml(sop.title)}</h3>
+
+                    <div style="margin-bottom: 20px;">
+                        <span class="badge">📄 ${sop.sop_id}</span>
+                        <span class="badge" style="background: #00ff00; color: #000;">
+                            ⭐ ${(sop.confidence * 100).toFixed(1)}% Match
+                        </span>
+                    </div>
+
+                    ${sop.reason ? `
+                        <div style="background: #1a1a1a; padding: 15px; border-radius: 5px; margin-bottom: 20px; border-left: 4px solid #ee0000;">
+                            <strong>💡 Selection Reason:</strong><br>
+                            ${escapeHtml(sop.reason)}
+                        </div>
+                    ` : ''}
+
+                    <div style="background: #252525; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
+                        <strong>📝 Summary:</strong><br><br>
+                        <div style="white-space: pre-wrap; line-height: 1.8;">${escapeHtml(sop.summary)}</div>
+                    </div>
+
+                    ${sop.steps && sop.steps.length > 0 ? `
+                        <div style="background: #1a1a1a; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
+                            <strong>🔧 Execution Steps:</strong><br><br>
+                            ${sop.steps.map((step, index) => `
+                                <div style="margin-bottom: 15px; padding: 10px; background: #252525; border-radius: 5px;">
+                                    <div style="font-weight: bold; margin-bottom: 5px;">
+                                        Step ${index + 1}${step.risk ? ` <span class="badge" style="background: ${step.risk === 'high' ? '#ff0000' : step.risk === 'medium' ? '#ffaa00' : '#00ff00'}; color: #000;">${step.risk.toUpperCase()} RISK</span>` : ''}
+                                    </div>
+                                    ${step.description ? `<div style="margin-bottom: 8px;">${escapeHtml(step.description)}</div>` : ''}
+                                    ${step.command ? `<pre style="background: #000; padding: 10px; border-radius: 3px; overflow-x: auto;"><code>${escapeHtml(step.command)}</code></pre>` : ''}
+                                    ${step.commands && step.commands.length > 0 ? step.commands.map(cmd => `<pre style="background: #000; padding: 10px; border-radius: 3px; overflow-x: auto; margin-top: 5px;"><code>${escapeHtml(cmd)}</code></pre>`).join('') : ''}
+                                </div>
+                            `).join('')}
+                        </div>
+                    ` : ''}
+
+                    ${sop.message ? `
+                        <div style="background: #252525; padding: 15px; border-radius: 5px; margin-bottom: 20px; color: #ffaa00;">
+                            <strong>⚠️ Note:</strong> ${escapeHtml(sop.message)}
+                        </div>
+                    ` : ''}
+
+                    ${githubUrl ? `
+                        <div style="text-align: center; margin-top: 30px;">
+                            <a href="${githubUrl}" target="_blank" class="btn btn-primary" style="display: inline-block; text-decoration: none;">
+                                🔗 View on GitHub →
+                            </a>
+                        </div>
+                    ` : ''}
+                </div>
+            `;
+
+            document.getElementById('sopModalContent').innerHTML = html;
+        }
+
+        function closeSopModal() {
+            document.getElementById('sopModal').classList.remove('show');
+        }
+
+        // Close modal when clicking outside
+        window.addEventListener('click', function(event) {
+            const modal = document.getElementById('sopModal');
+            if (event.target === modal) {
+                closeSopModal();
+            }
+        });
 
         // ============================================================================
         // Settings Modal Functions

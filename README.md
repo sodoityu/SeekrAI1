@@ -16,28 +16,31 @@ All from one simple web interface at `http://localhost:5500`
 ## 🏗️ Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                     Browser (localhost:5500)                │
-│                   ┌─────────────────────┐                   │
-│                   │   Search Interface  │                   │
-│                   └──────────┬──────────┘                   │
-└──────────────────────────────┼──────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                     Browser (localhost:5500)                        │
+│                   ┌─────────────────────┐                           │
+│                   │   Search Interface  │                           │
+│                   └──────────┬──────────┘                           │
+└──────────────────────────────┼──────────────────────────────────────┘
                                │
                                ▼
-┌─────────────────────────────────────────────────────────────┐
-│              Flask App (unified_search.py)                  │
-│  ┌────────────┐  ┌─────────────────┐  ┌─────────────────┐  │
-│  │Jira Search │  │  SFDC/KCS       │  │ Slack Search    │  │
-│  │            │  │  Search         │  │ (MCP)           │  │
-│  └─────┬──────┘  └────────┬────────┘  └────────┬────────┘  │
-└────────┼──────────────────┼────────────────────┼───────────┘
-         │                  │                    │
-         ▼                  ▼                    ▼
-┌──────────────┐  ┌──────────────────┐  ┌──────────────────┐
-│ Jira API     │  │ Red Hat API      │  │ Slack MCP Server │
-│ (REST)       │  │ (SSO + SFDC/KCS) │  │ (slack_search_   │
-│              │  │                  │  │  standalone.py)  │
-└──────────────┘  └──────────────────┘  └──────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│              Flask App (unified_search.py)                          │
+│  ┌────────────┐  ┌─────────────────┐  ┌──────────┐  ┌──────────┐  │
+│  │Jira Search │  │  SFDC/KCS       │  │  Slack   │  │   SOP    │  │
+│  │            │  │  Search         │  │  Search  │  │ Document │  │
+│  │            │  │                 │  │  (MCP)   │  │  Search  │  │
+│  └─────┬──────┘  └────────┬────────┘  └────┬─────┘  └────┬─────┘  │
+└────────┼──────────────────┼────────────────┼─────────────┼─────────┘
+         │                  │                │             │
+         ▼                  ▼                ▼             ▼
+┌──────────────┐  ┌──────────────────┐  ┌────────────┐  ┌────────────┐
+│ Jira API     │  │ Red Hat API      │  │ Slack MCP  │  │ SOP MCP    │
+│ (REST)       │  │ (SSO + SFDC/KCS) │  │ Server     │  │ Server     │
+│              │  │                  │  │ (slack_    │  │ (retrieve- │
+│              │  │                  │  │  search_   │  │  sop, get- │
+│              │  │                  │  │  standalone│  │  sop APIs) │
+└──────────────┘  └──────────────────┘  └────────────┘  └────────────┘
 ```
 
 **Key Components:**
@@ -45,7 +48,9 @@ All from one simple web interface at `http://localhost:5500`
 - **Jira Search** - Search Jira tickets/issues via Atlassian REST API
 - **SFDC/KCS Search** - Search Red Hat Knowledge Centered Service articles via Red Hat SSO API
 - **Slack Search** - Search messages across all channels via MCP integration
+- **SOP Document Search** - Search Standard Operating Procedures via MCP server (semantic search with vector embeddings)
 - **slack_search_standalone.py** - Slack MCP server integration
+- **MCP Server** - Provides SOP retrieval endpoints (`/retrieve-sop`, `/get-sop`) at http://localhost:8000
 - **templates_unified/** - HTML templates for web UI
 - **Credentials** - Stored in Flask session or environment variables
 
@@ -240,17 +245,11 @@ Open `http://localhost:5500` in your browser.
 
 **SLACK_XOXC_TOKEN and SLACK_XOXD_TOKEN:**
 
-1. Open Slack in your browser (https://redhat.enterprise.slack.com)
-2. Open Developer Tools (F12)
-3. Go to **Application** → **Cookies** → `https://redhat.enterprise.slack.com`
-4. Find and copy:
-   - Cookie named `d` → This is your **SLACK_XOXD_TOKEN**
-   - Cookie named `d-s` starts with `xoxc-` → This is your **SLACK_XOXC_TOKEN**
+Slack tokens — open Slack in your browser (not desktop app), open DevTools (F12):
 
-**Alternative method (from browser storage):**
-1. Open Developer Tools (F12) → **Console** tab
-2. Type: `JSON.parse(localStorage.localConfig_v2)["teams"]`
-3. Find your workspace and copy the `token` (starts with `xoxc-`)
+xoxc-* token: Network tab > click any channel > find request to api.slack.com > token in request body
+xoxd-* token: Application tab > Cookies > cookie named d
+Channel IDs — right-click a channel in Slack > "View channel details" > ID at bottom
 
 ---
 
