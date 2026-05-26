@@ -46,6 +46,9 @@ poetry.lock
 *~
 .DS_Store
 
+# Claude Code settings (local only)
+.claude/
+
 # Logs
 *.log
 logs/
