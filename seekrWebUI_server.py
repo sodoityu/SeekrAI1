@@ -8,6 +8,7 @@ Serves HTML pages and provides API endpoints for authentication and token manage
 from flask import Flask, request, jsonify, session, redirect, send_file, send_from_directory
 from flask_cors import CORS
 from datetime import datetime, timedelta
+import tempfile
 import requests
 import logging
 import os
@@ -193,28 +194,40 @@ def authenticate_kerberos(username, password):
             kinit_input = pwd_part + '\n' + otp_part + '\n'
         else:
             kinit_input = password + '\n'
-       
-        #stdout, stderr = process.communicate(input=kinit_input, timeout=10)
-        
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.tmp', delete=False) as f:
-            f.write(kinit_input)
-            tmpfile = f.name
+
+        # Try --password-file first (works on macOS), fall back to stdin pipe (works on Fedora/RHEL)
         try:
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.tmp', delete=False) as f:
+                f.write(kinit_input)
+                tmpfile = f.name
             result = subprocess.run(
                 ['kinit', '--password-file=' + tmpfile, principal],
-                capture_output=True, text=True, timeout=10
+                capture_output=True, text=True, timeout=30
             )
+            os.unlink(tmpfile)
+            if 'unrecognized option' in result.stderr:
+                raise ValueError('password-file not supported')
             stdout, stderr = result.stdout, result.stderr
             process = result
-        finally:
-            os.unlink(tmpfile)
+        except (ValueError, Exception) as pf_err:
+            if os.path.exists(tmpfile):
+                os.unlink(tmpfile)
+            logger.info(f"--password-file not supported, using stdin pipe: {pf_err}")
+            process = subprocess.Popen(
+                ['kinit', principal],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            stdout, stderr = process.communicate(input=kinit_input, timeout=30)
         if process.returncode == 0:
             logger.info(f"Kerberos authentication successful for {username}")
             subprocess.run(['kdestroy'], capture_output=True)
             return True, "Authentication successful"
         else:
             logger.warning(f"Kerberos authentication failed for {username}: {stderr.strip()}")
-            return False, "Invalid username or password"
+            return False, f"Kerberos error: {stderr.strip()}"
 
     except subprocess.TimeoutExpired:
         logger.error(f"Kerberos authentication timeout for {username}")
@@ -225,6 +238,7 @@ def authenticate_kerberos(username, password):
     except Exception as e:
         logger.error(f"Kerberos authentication error for {username}: {str(e)}")
         return False, "Authentication error - please try again"
+
 
 # ============================================================================
 # BACKGROUND TOKEN VALIDATION

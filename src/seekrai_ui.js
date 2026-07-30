@@ -1208,7 +1208,14 @@ if (testSlackTokenBtn && slackXoxcInput && slackXoxdInput && slackStatusMessage)
                 body: JSON.stringify({ xoxc: xoxcToken, xoxd: xoxdToken })
             });
 
-            const data = await response.json();
+            const text = await response.text();
+            let data;
+            try {
+                data = JSON.parse(text);
+            } catch (e) {
+                showSlackStatus('error', `❌ Server error (${response.status}): ${text.substring(0, 200) || 'Empty response'}`);
+                return;
+            }
 
             if (response.ok) {
                 showSlackStatus('success', data.message || 'Connection successful! Tokens are valid.');
@@ -1216,7 +1223,7 @@ if (testSlackTokenBtn && slackXoxcInput && slackXoxdInput && slackStatusMessage)
                 showSlackStatus('error', data.message || 'Connection failed. Please check your tokens.');
             }
         } catch (error) {
-            showSlackStatus('error', 'An error occurred while testing the connection');
+            showSlackStatus('error', `❌ Error: ${error.message}`);
         } finally {
             // Restore button
             testSlackTokenBtn.disabled = false;
