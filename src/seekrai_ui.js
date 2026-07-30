@@ -563,14 +563,17 @@ function initializeDatePicker() {
     const today = new Date();
     today.setHours(0, 0, 0, 0); // Reset to start of day
 
+    // Format date as YYYY-MM-DD using local timezone (not UTC)
+    const formatDate = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+
     // Set min to today
-    const minDateStr = today.toISOString().split('T')[0];
+    const minDateStr = formatDate(today);
     atlassianTokenExpiryInput.setAttribute('min', minDateStr);
 
     // Set max to 90 days from today
     const maxDate = new Date(today);
     maxDate.setDate(maxDate.getDate() + 90);
-    const maxDateStr = maxDate.toISOString().split('T')[0];
+    const maxDateStr = formatDate(maxDate);
     atlassianTokenExpiryInput.setAttribute('max', maxDateStr);
 
     console.log('Date picker initialized - Min:', minDateStr, 'Max:', maxDateStr);

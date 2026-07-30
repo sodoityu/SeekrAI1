@@ -16,6 +16,7 @@ import sys
 import tempfile
 import subprocess
 import json
+import getpass
 from pathlib import Path
 
 # Configure logging
