@@ -2481,6 +2481,11 @@ async function performSearch() {
     searchButton.textContent = 'Searching...';
     searchButton.disabled = true;
 
+    // Show spinner, hide previous results
+    const loadingEl = document.getElementById('search-loading');
+    if (loadingEl) loadingEl.style.display = 'flex';
+    document.querySelectorAll('.results-section').forEach(s => s.style.display = 'none');
+
     try {
         // Get currently selected sources
         const sourceCheckboxes = document.querySelectorAll('.source-filter');
@@ -2527,9 +2532,10 @@ async function performSearch() {
 
         alert(errorMsg + '\n\nCheck browser console (F12) for details.');
     } finally {
-        // Reset button
+        // Reset button and hide spinner
         searchButton.textContent = originalText;
         searchButton.disabled = false;
+        if (loadingEl) loadingEl.style.display = 'none';
     }
 }
 
