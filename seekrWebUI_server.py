@@ -12,7 +12,7 @@ import requests
 import logging
 import os
 import sys
-#HEIMIDAL FIX BY ARCHI
+#HEIMIDAL FIX tempfile requirement
 import tempfile
 import subprocess
 import json
