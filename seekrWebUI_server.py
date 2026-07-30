@@ -153,73 +153,86 @@ def add_search_to_history(username, query, results_count, sources):
 # KERBEROS AUTHENTICATION
 # ============================================================================
 
-def authenticate_kerberos(username, password):
-    """
-    Authenticate user with Kerberos.
-    Password field contains password+token concatenated.
-    Splits the last 6 digits as the OTP token for kinit's separate prompt.
-    Returns (success: bool, message: str)
-    """
-    # Validate inputs
-    if not username or not isinstance(username, str):
-        logger.warning("Login attempt with empty or invalid username")
-        return False, "Username is required"
+  def authenticate_kerberos(username, password):
+      """
+      Authenticate user with Kerberos.
+      Supports both Heimdal (macOS) and MIT (Linux) kinit.
+      Returns (success: bool, message: str)
+      """
+      # Validate inputs
+      if not username or not isinstance(username, str):
+          logger.warning("Login attempt with empty or invalid username")
+          return False, "Username is required"
 
-    if not password or not isinstance(password, str):
-        logger.warning(f"Login attempt with empty password for user: {username}")
-        return False, "Password is required"
+      if not password or not isinstance(password, str):
+          logger.warning(f"Login attempt with empty password for user: {username}")
+          return False, "Password is required"
 
-    # Sanitize username (only allow alphanumeric, underscore, dash)
-    username = username.strip()
-    if not username or not all(c.isalnum() or c in '_-' for c in username):
-        logger.warning(f"Login attempt with invalid username format: {username}")
-        return False, "Invalid username format"
+      # Sanitize username (only allow alphanumeric, underscore, dash)
+      username = username.strip()
+      if not username or not all(c.isalnum() or c in '_-' for c in username):
+          logger.warning(f"Login attempt with invalid username format: {username}")
+          return False, "Invalid username format"
+  
+      principal = f"{username}@{KERBEROS_REALM}"
+      logger.info(f"Attempting Kerberos authentication for: {principal}")
 
-    principal = f"{username}@{KERBEROS_REALM}"
-    logger.info(f"Attempting Kerberos authentication for: {principal}")
+      try:
+          # Check if kinit is available
+          kinit_check = subprocess.run(['which', 'kinit'], capture_output=True)
+          if kinit_check.returncode != 0:
+              logger.error("kinit not found - Kerberos authentication unavailable")
+              return False, "Kerberos authentication not configured on this server"
 
-    try:
-        # Check if kinit is available
-        kinit_check = subprocess.run(['which', 'kinit'], capture_output=True)
-        if kinit_check.returncode != 0:
-            logger.error("kinit not found - Kerberos authentication unavailable")
-            return False, "Kerberos authentication not configured on this server"
+          kinit_input = password + '\n'
 
-        # Split last 6 digits as OTP token (kinit prompts separately for password and OTP)
-        if len(password) > 6 and password[-6:].isdigit():
-            pwd_part = password[:-6]
-            otp_part = password[-6:]
-            kinit_input = pwd_part + '\n' + otp_part + '\n'
-        else:
-            kinit_input = password + '\n'
+          # Detect Heimdal (macOS) vs MIT (Linux) kinit
+          version_check = subprocess.run(['kinit', '--version'], capture_output=True, text=True)
+          is_heimdal = 'Heimdal' in version_check.stderr or 'Heimdal' in version_check.stdout
 
-        process = subprocess.Popen(
-            ['kinit', principal],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
+          if is_heimdal:
+              # Heimdal ignores stdin pipe, use --password-file instead
+              with tempfile.NamedTemporaryFile(mode='w', suffix='.tmp', delete=False) as f:
+                  f.write(kinit_input)
+                  tmpfile = f.name
+              try:
+                  result = subprocess.run(
+                      ['kinit', '--password-file=' + tmpfile, principal],
+                      capture_output=True, text=True, timeout=10
+                  )
+                  stdout, stderr = result.stdout, result.stderr
+                  process = result
+              finally:
+                  os.unlink(tmpfile)
+          else:
+              # MIT kinit reads from stdin pipe when no TTY is present
+              proc = subprocess.Popen(
+                  ['kinit', principal],
+                  stdin=subprocess.PIPE,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.PIPE,
+                  text=True
+              )
+              stdout, stderr = proc.communicate(input=kinit_input, timeout=10)
+              process = proc
 
-        stdout, stderr = process.communicate(input=kinit_input, timeout=30)
+          if process.returncode == 0:
+              logger.info(f"Kerberos authentication successful for {username}")
+              subprocess.run(['kdestroy'], capture_output=True)
+              return True, "Authentication successful"
+          else:
+              logger.warning(f"Kerberos authentication failed for {username}: {stderr.strip()}")
+              return False, "Invalid username or password"
 
-        if process.returncode == 0:
-            logger.info(f"Kerberos authentication successful for {username}")
-            subprocess.run(['kdestroy'], capture_output=True)
-            return True, "Authentication successful"
-        else:
-            logger.warning(f"Kerberos authentication failed for {username}: {stderr.strip()}")
-            return False, "Invalid username or password"
-
-    except subprocess.TimeoutExpired:
-        logger.error(f"Kerberos authentication timeout for {username}")
-        return False, "Authentication timeout - please try again"
-    except FileNotFoundError:
-        logger.error("kinit command not found")
-        return False, "Kerberos authentication not available"
-    except Exception as e:
-        logger.error(f"Kerberos authentication error for {username}: {str(e)}")
-        return False, "Authentication error - please try again"
+      except subprocess.TimeoutExpired:
+          logger.error(f"Kerberos authentication timeout for {username}")
+          return False, "Authentication timeout - please try again"
+      except FileNotFoundError:
+          logger.error("kinit command not found")
+          return False, "Kerberos authentication not available"
+      except Exception as e:
+          logger.error(f"Kerberos authentication error for {username}: {str(e)}")
+          return False, "Authentication error - please try again"
 
 # ============================================================================
 # BACKGROUND TOKEN VALIDATION
