@@ -2377,6 +2377,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Check for pending search from Recent Searches page (at the end, after all setup)
     const pendingSearch = sessionStorage.getItem('pendingSearch');
+    // Initialize Slack channel checkboxes
+    initSlackChannels();
+
     if (pendingSearch) {
         console.log('📌 Found pending search in sessionStorage:', pendingSearch);
         sessionStorage.removeItem('pendingSearch');
@@ -2393,6 +2396,108 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 });
+
+// ============================================================================
+// Slack Channel Filter Functions
+// ============================================================================
+
+const COMMON_SLACK_CHANNELS = [
+    'forum-rosa-support',
+    'openshift-sre',
+    'team-sre',
+    'sre-alerts',
+    'sre-general',
+    'rosa-sre',
+    'osd-sre',
+    'forum-managed-openshift',
+    'ask-sre',
+];
+
+let _slackChannelsInitialized = false;
+
+async function initSlackChannels() {
+    if (_slackChannelsInitialized) return;
+    _slackChannelsInitialized = true;
+
+    const container = document.getElementById('slack-channel-options');
+    if (!container) return;
+
+    let channels = COMMON_SLACK_CHANNELS;
+    try {
+        const resp = await fetch('/api/settings/slack-channels', {credentials: 'include'});
+        if (resp.ok) {
+            const data = await resp.json();
+            if (Array.isArray(data.channels) && data.channels.length > 0) {
+                channels = data.channels;
+            }
+        }
+    } catch (e) { /* use defaults */ }
+
+    channels.forEach(channel => {
+        const label = document.createElement('label');
+        label.className = 'filter-option channel-option';
+        label.style.fontSize = '0.88em';
+        label.innerHTML = `
+            <input type="checkbox" class="filter-checkbox channel-filter" data-channel="${channel}" checked onchange="onChannelFilterChange()" />
+            <span class="filter-label">#${channel}</span>
+        `;
+        container.appendChild(label);
+    });
+}
+
+function getSelectedSlackChannels() {
+    const allChannelsCheckbox = document.getElementById('channel-all');
+    // "All Channels" checked → no restriction (null = search everything)
+    if (!allChannelsCheckbox || allChannelsCheckbox.checked) return null;
+
+    const channelCheckboxes = document.querySelectorAll('#slack-channel-options .channel-filter:checked');
+    const channels = Array.from(channelCheckboxes).map(cb => cb.getAttribute('data-channel'));
+    return channels;
+}
+
+function toggleAllSlackChannels(checkbox) {
+    const channelCheckboxes = document.querySelectorAll('#slack-channel-options .channel-filter');
+    channelCheckboxes.forEach(cb => { cb.checked = checkbox.checked; });
+}
+
+function clearSlackChannels() {
+    const allChannelsCheckbox = document.getElementById('channel-all');
+    if (allChannelsCheckbox) allChannelsCheckbox.checked = true;
+    const channelCheckboxes = document.querySelectorAll('#slack-channel-options .channel-filter');
+    channelCheckboxes.forEach(cb => { cb.checked = true; });
+}
+
+function onChannelFilterChange() {
+    const channelCheckboxes = document.querySelectorAll('#slack-channel-options .channel-filter');
+    const allChecked = Array.from(channelCheckboxes).every(cb => cb.checked);
+    const allChannelsCheckbox = document.getElementById('channel-all');
+    if (allChannelsCheckbox) allChannelsCheckbox.checked = allChecked;
+}
+
+// Add any channels found in search results that aren't already in the sidebar list
+function syncSlackChannelsFromResults(messages) {
+    const container = document.getElementById('slack-channel-options');
+    if (!container || !messages || messages.length === 0) return;
+
+    const existing = new Set(
+        Array.from(container.querySelectorAll('.channel-filter')).map(cb => cb.getAttribute('data-channel'))
+    );
+
+    messages.forEach(msg => {
+        const ch = msg.channel_name || msg.channel || '';
+        if (!ch || ch.startsWith('C0') || existing.has(ch)) return; // skip raw IDs
+
+        existing.add(ch);
+        const label = document.createElement('label');
+        label.className = 'filter-option channel-option';
+        label.innerHTML = `
+            <input type="checkbox" class="filter-checkbox channel-filter" data-channel="${ch}" checked onchange="onChannelFilterChange()" />
+            <span class="filter-label">#${ch}</span>
+        `;
+        container.appendChild(label);
+        onChannelFilterChange();
+    });
+}
 
 async function performSearch() {
     const searchInput = document.querySelector('.search-input');
@@ -2411,62 +2516,6 @@ async function performSearch() {
         detailPanelElement.classList.remove('visible');
         detailPanelElement.classList.remove('expanded');
         console.log('🔄 Closed Details panel for new search');
-    }
-
-    // Auto-select source filters based on keywords in query
-    const queryLower = query.toLowerCase();
-    const detectedSources = [];
-
-    // Detect source keywords in query
-    if (queryLower.includes('sfdc') || queryLower.includes('salesforce')) {
-        detectedSources.push('salesforce');
-    }
-    if (queryLower.includes('ohss') || queryLower.includes('jira')) {
-        detectedSources.push('ohss');
-    }
-    if (queryLower.includes('slack')) {
-        detectedSources.push('slack');
-    }
-    if (queryLower.includes('kcs')) {
-        detectedSources.push('kcs');
-    }
-    if (queryLower.includes('github')) {
-        detectedSources.push('github');
-    }
-    if (queryLower.includes('gitlab')) {
-        detectedSources.push('gitlab');
-    }
-    if (queryLower.includes('repo') || queryLower.includes('sop')) {
-        if (!detectedSources.includes('github')) detectedSources.push('github');
-        if (!detectedSources.includes('gitlab')) detectedSources.push('gitlab');
-    }
-
-    // If source keywords detected, auto-select only those sources
-    if (detectedSources.length > 0) {
-        console.log('✅ Auto-selecting sources:', detectedSources);
-
-        sourceFilterCheckboxes.forEach(checkbox => {
-            checkbox.checked = false;
-        });
-
-        detectedSources.forEach(source => {
-            const checkbox = document.querySelector(`.source-filter[data-source="${source}"]`);
-            if (checkbox) {
-                checkbox.checked = true;
-                console.log(`  ✓ Checked source: ${source}`);
-            }
-        });
-
-        updateResultsVisibility();
-
-        // Expand the detected source sections
-        detectedSources.forEach(source => {
-            const resultsSection = document.querySelector(`.results-section[data-source="${source}"]`);
-            if (resultsSection) {
-                resultsSection.classList.remove('collapsed');
-                console.log(`  ✅ Expanded ${source} section`);
-            }
-        });
     }
 
     // Close detail panel and clear old data
@@ -2516,7 +2565,8 @@ async function performSearch() {
             body: JSON.stringify({
                 query: query,
                 max_results: 20,
-                sources: selectedSources  // Include selected sources
+                sources: selectedSources,
+                slack_channels: getSelectedSlackChannels()  // null = all channels
             })
         });
 
@@ -2575,17 +2625,11 @@ async function saveSearchToHistory(query, totalResults, results) {
                 case 'kcs':
                     if (results.kcs?.articles?.length > 0 || results.kcs?.docs?.length > 0) sources.push('kcs');
                     break;
-                case 'sop':
-                    if (results.sop?.sops?.length > 0) sources.push('sop');
-                    break;
                 case 'github':
                     if (results.github?.results?.length > 0) sources.push('github');
                     break;
                 case 'gitlab':
                     if (results.gitlab?.results?.length > 0) sources.push('gitlab');
-                    break;
-                case 'docs':
-                    if (results.docs?.docs?.length > 0) sources.push('docs');
                     break;
             }
         });
@@ -2737,8 +2781,8 @@ function applySortToResults() {
     renderSFDCResults(results.sfdc || {cases: [], total: 0});
     renderJiraResults(results.jira || {issues: [], total: 0});
     renderSlackResults(results.slack || {messages: [], total: 0});
+    syncSlackChannelsFromResults(results.slack?.messages);
     renderKCSResults(results.kcs || {articles: [], total: 0});
-    renderSOPResults(results.sop || {sops: [], total: 0});
     renderGitHubResults(results.github || {results: [], total: 0});
     renderGitLabResults(results.gitlab || {results: [], total: 0});
 
@@ -2765,16 +2809,12 @@ function displaySearchResults(results, query) {
     }
     console.log('📊 Jira:', results.jira?.issues?.length || 0, 'issues, total:', results.jira?.total || 0);
     console.log('📊 KCS:', results.kcs?.articles?.length || 0, 'articles, total:', results.kcs?.total || 0);
-    console.log('📊 Docs:', results.docs?.docs?.length || 0, 'docs, total:', results.docs?.total || 0, results.docs?.error ? `ERROR: ${results.docs.error}` : '');
-
     // Calculate total results based on ACTUAL displayed items, not total matches
     const totalResults =
         (results.jira?.issues?.length || 0) +
         (results.sfdc?.cases?.length || 0) +
         (results.slack?.messages?.length || 0) +
         (results.kcs?.articles?.length || 0) +
-        (results.sop?.sops?.length || 0) +
-        (results.docs?.docs?.length || 0) +
         (results.github?.results?.length || 0) +
         (results.gitlab?.results?.length || 0);
 
@@ -2822,7 +2862,6 @@ function displaySearchResults(results, query) {
         jira: { currentPage: 1, itemsPerPage: 10 },
         slack: { currentPage: 1, itemsPerPage: 10 },
         kcs: { currentPage: 1, itemsPerPage: 10 },
-        sop: { currentPage: 1, itemsPerPage: 10 },
         github: { currentPage: 1, itemsPerPage: 10 },
         gitlab: { currentPage: 1, itemsPerPage: 10 }
     };
@@ -2838,12 +2877,10 @@ function displaySearchResults(results, query) {
 
     // Render Slack results
     renderSlackResults(results.slack || {messages: [], total: 0});
+    syncSlackChannelsFromResults(results.slack?.messages);
 
     // Render KCS results
     renderKCSResults(results.kcs || {articles: [], total: 0});
-
-    // Render SOP results
-    renderSOPResults(results.sop || {sops: [], total: 0});
 
     // Render GitHub results
     renderGitHubResults(results.github || {results: [], total: 0});
@@ -2857,7 +2894,6 @@ function displaySearchResults(results, query) {
     if (results.jira?.issues?.length > 0) sourcesWithResults.push('ohss');
     if (results.slack?.messages?.length > 0) sourcesWithResults.push('slack');
     if (results.kcs?.articles?.length > 0) sourcesWithResults.push('kcs');
-    if (results.sop?.sops?.length > 0) sourcesWithResults.push('sop');
     if (results.github?.results?.length > 0) sourcesWithResults.push('github');
     if (results.gitlab?.results?.length > 0) sourcesWithResults.push('gitlab');
 
@@ -2873,7 +2909,6 @@ function displaySearchResults(results, query) {
                 source === 'ohss' ? results.jira.issues.length :
                 source === 'slack' ? results.slack.messages.length :
                 source === 'kcs' ? results.kcs.articles.length :
-                source === 'sop' ? results.sop.sops.length :
                 source === 'github' ? results.github.results.length :
                 results.gitlab.results.length
             } results)`);
@@ -3078,9 +3113,6 @@ function changePage(source, page) {
             break;
         case 'kcs':
             renderKCSResults(window.lastSearchResults.kcs || {docs: [], total: 0});
-            break;
-        case 'sop':
-            renderSOPResults(window.lastSearchResults.sop || {docs: [], total: 0});
             break;
         case 'github':
             renderGitHubResults(window.lastSearchResults.github || {results: [], total: 0});
@@ -3336,7 +3368,7 @@ function renderJiraResults(jira) {
         const productTag = extractProductTag(issue.product);
         const dataProductAttr = productTag ? `data-product="${productTag}"` : '';
         return `
-        <div class="result-item" ${dataProductAttr}>
+        <div class="result-item" ${dataProductAttr} data-jira-key="${issue.key}">
             <div class="result-header">
                 <div class="result-title">
                     <img src="/src/images/atlassian-jira.svg" class="result-icon" alt="Jira" />
@@ -3723,51 +3755,15 @@ function renderKCSResults(kcs) {
     lazyLoadVisibleKCSDetails(paginatedArticles);
 }
 
-// Render SOP results
-function renderSOPResults(sop) {
-    const section = document.querySelector('[data-source="sop"] .section-content');
-    if (!section) return;
-
-    const resultsSection = document.querySelector('[data-source="sop"]');
-    const headerSpan = resultsSection?.querySelector('.section-title-text');
-    const count = sop.sops?.length || 0;
-
-    if (!sop.sops || sop.sops.length === 0) {
-        section.innerHTML = '<p class="no-results">No SOP documents found</p>';
-        if (headerSpan) headerSpan.textContent = `SOP Documents (0)`;
-        return;
-    }
-
-    if (headerSpan) headerSpan.textContent = `SOP Documents (${count})`;
-
-    // Get paginated items
-    const paginatedSops = getPaginatedItems(sop.sops, 'sop');
-    const totalItems = sop.sops.length;
-
-    section.innerHTML = paginatedSops.map(doc => `
-        <div class="result-item">
-            <div class="result-header">
-                <div class="result-title">
-                    <img src="/src/images/Logo-Red_Hat-Hat_icon-Red-RGB.svg" class="result-icon" alt="Red Hat" />
-                    ${doc.title || 'No title'}
-                </div>
-            </div>
-            <div class="result-meta">
-                <span class="badge">Score: ${doc.score || 0}</span>
-            </div>
-            <div class="result-description">${doc.summary || ''}</div>
-            <a href="${doc.url}" target="_blank" class="view-link">View Document</a>
-        </div>
-    `).join('');
-
-    // Add pagination controls
-    section.innerHTML += createPaginationControls('sop', totalItems);
-
-    updateSectionHeader('sop', sop.sops.length, sop.total);
-}
-
 // Render Red Hat Docs results
 // Render GitHub results
+function similarityBadge(score) {
+    const pct = score != null ? Math.round(score * 100) : null;
+    if (pct == null) return '';
+    const color = pct >= 80 ? '#22c55e' : pct >= 60 ? '#f59e0b' : '#94a3b8';
+    return `<span class="badge" style="background:${color};color:#fff;margin-left:4px;">Similarity: ${pct}%</span>`;
+}
+
 function renderGitHubResults(github) {
     const section = document.querySelector('[data-source="github"] .section-content');
     if (!section) return;
@@ -3789,20 +3785,24 @@ function renderGitHubResults(github) {
     const totalItems = github.results.length;
 
     section.innerHTML = paginatedResults.map(item => {
-        const cleanUrl = item.repository && item.path
+        const cleanUrl = item.url || (item.repository && item.path
             ? `https://github.com/${item.repository}/blob/master/${item.path}`
-            : (item.url || '#');
+            : '#');
 
         return `
-        <div class="result-item">
+        <div class="result-item" data-global-idx="${item._originalIndex}">
             <div class="result-header">
                 <div class="result-title">
                     <img src="/src/images/github_logo_icon.svg" class="result-icon" alt="GitHub" />
                     ${item.repository || 'Unknown repo'} / ${item.name || 'unknown file'}
                 </div>
             </div>
-            ${item.language && item.language !== 'N/A' && item.language !== 'Unknown' ? `<div class="result-meta"><span class="badge">${item.language}</span></div>` : ''}
+            <div class="result-meta">
+                ${item.language && item.language !== 'N/A' && item.language !== 'Unknown' ? `<span class="badge">${item.language}</span>` : ''}
+                ${similarityBadge(item.similarity)}
+            </div>
             <div class="result-path">${item.path || ''}</div>
+            ${item.summary ? `<div class="result-description" style="margin-top:4px;color:#555;font-size:0.85em;">${item.summary}</div>` : ''}
             <a href="${cleanUrl}" target="_blank" class="view-link github-view">View on GitHub</a>
         </div>
         `;
@@ -3845,7 +3845,7 @@ function renderGitLabResults(gitlab) {
         const cleanUrl = item.url || '#';
 
         return `
-        <div class="result-item">
+        <div class="result-item" data-global-idx="${item._originalIndex}">
             <div class="result-header">
                 <div class="result-title">
                     <img src="/src/images/gitlab-icon.svg" class="result-icon" alt="GitLab" />
@@ -3910,8 +3910,6 @@ function updateTotalCount(results) {
         (results.sfdc?.cases?.length || 0) +
         (results.slack?.messages?.length || 0) +
         (results.kcs?.articles?.length || 0) +
-        (results.sop?.sops?.length || 0) +
-        (results.docs?.docs?.length || 0) +
         (results.github?.results?.length || 0) +
         (results.gitlab?.results?.length || 0);
 
@@ -4001,6 +3999,17 @@ function showDetailPanel(resultData, source) {
                 tab.style.display = '';
             }
         });
+
+        // Show AI Summary tab only for Salesforce cases
+        const aiTab = detailPanel.querySelector('.ai-tab');
+        if (aiTab) {
+            aiTab.style.display = source === 'salesforce' ? '' : 'none';
+        }
+        if (source === 'salesforce' && resultData.case_number) {
+            setAIContext(resultData.case_number, resultData);
+        } else {
+            resetAISummaryPanel();
+        }
     }
 
     // Update the header based on source
@@ -4015,7 +4024,6 @@ function showDetailPanel(resultData, source) {
         'jira': '/src/images/atlassian-jira.svg',  // All Jira tickets (OHSS, RFE, etc.)
         'slack': '/src/images/slack_logo_icon.svg',
         'kcs': '/src/images/Logo-Red_Hat-Hat_icon-Standard-RGB.svg',  // Match search results logo
-        'sop': '/src/images/Logo-Red_Hat-Hat_icon-Red-RGB.svg',
         'github': '/src/images/github_logo_icon.svg',
         'gitlab': '/src/images/gitlab-icon.svg'
     };
@@ -4031,7 +4039,7 @@ function showDetailPanel(resultData, source) {
         detailTitle.textContent = `Jira ${resultData.key}`;
     } else if (source === 'slack') {
         detailTitle.textContent = `Slack #${resultData.channel_name || resultData.channel || 'unknown'}`;
-    } else if (source === 'kcs' || source === 'sop') {
+    } else if (source === 'kcs') {
         detailTitle.textContent = resultData.title || 'Article';
     } else if (source === 'github' || source === 'gitlab') {
         detailTitle.textContent = resultData.name || resultData.filename || 'Repository File';
@@ -4048,7 +4056,7 @@ function showDetailPanel(resultData, source) {
         } else if (source === 'ohss' || source === 'jira') {
             secondTab.textContent = 'Linked Salesforce ticket';
             secondTab.style.display = 'block';
-        } else if (source === 'github' || source === 'gitlab' || source === 'slack' || source === 'kcs' || source === 'sop') {
+        } else if (source === 'github' || source === 'gitlab' || source === 'slack' || source === 'kcs') {
             // Hide External Trackers tab for sources that don't have linked tickets
             secondTab.style.display = 'none';
         }
@@ -4304,7 +4312,7 @@ function showDetailPanel(resultData, source) {
             document.getElementById('detail-owner').textContent = resultData.repository || 'N/A';
             document.getElementById('detail-status').textContent = resultData.path || resultData.name || 'N/A';
             document.getElementById('detail-internal-status').textContent = resultData.language || 'N/A';
-            document.getElementById('detail-account-name').textContent = resultData.score ? resultData.score.toFixed(2) : 'N/A';
+            document.getElementById('detail-account-name').textContent = resultData.similarity != null ? Math.round(resultData.similarity * 100) + '%' : 'N/A';
 
             // Second Column
             const cleanUrl = constructCleanRepoUrl(resultData, 'github');
@@ -4400,6 +4408,7 @@ function showDetailPanel(resultData, source) {
                 language: resultData.language || 'N/A',
                 description: resultData.content_snippet || resultData.description || 'No description available'
             };
+            const summaryText = resultData.summary || '';
 
             // Completely replace the overview tab content
             overviewTabContent.innerHTML = `
@@ -4414,12 +4423,17 @@ function showDetailPanel(resultData, source) {
                         <div class="kcs-section-text" style="font-family: 'Courier New', monospace;">${repoInfo.path}</div>
                     </div>
 
+                    ${summaryText ? `
+                    <div class="kcs-section">
+                        <h4 class="kcs-section-title">Content Preview</h4>
+                        <div class="kcs-section-text">${summaryText}</div>
+                    </div>` : `
                     <div class="kcs-section">
                         <h4 class="kcs-section-title">Description</h4>
                         <div class="description-content">
                             <em style="color: #999;">Loading first 20 lines...</em>
                         </div>
-                    </div>
+                    </div>`}
 
                     <div class="kcs-action-buttons">
                         <a href="${fileUrl}" target="_blank" class="view-link ${isGitHub ? 'github-view' : 'gitlab-view'}">
@@ -4434,8 +4448,8 @@ function showDetailPanel(resultData, source) {
                 </div>
             `;
 
-            // Fetch file content asynchronously
-            fetchFileDescription(resultData, source);
+            // Fetch file content asynchronously only if no local summary
+            if (!summaryText) fetchFileDescription(resultData, source);
             console.log(`✅ ${source.toUpperCase()}: Replaced overview tab content with repository details`);
         } else {
             console.error(`❌ ${source.toUpperCase()}: Could not find overview tab content`);
@@ -4940,7 +4954,8 @@ function showDetailPanel(resultData, source) {
                 if (resultData.path) repoInfo.push(`File: ${resultData.path}`);
                 if (resultData.filename) repoInfo.push(`File: ${resultData.filename}`);
                 if (resultData.language) repoInfo.push(`Language: ${resultData.language}`);
-                if (resultData.description) repoInfo.push(`\n${resultData.description}`);
+                if (resultData.summary) repoInfo.push(`\n${resultData.summary}`);
+                else if (resultData.description) repoInfo.push(`\n${resultData.description}`);
 
                 restoredSectionText.textContent = repoInfo.join('\n') || 'No description available';
             } else {
@@ -6099,30 +6114,43 @@ function addResultClickListeners() {
             }
             sourceType = 'salesforce';
         } else {
-            // For other sources, use index-based lookup
-            const allItemsInSection = section.querySelectorAll('.result-item');
-            const index = Array.from(allItemsInSection).indexOf(resultItem);
-
+            // For other sources, use stable data-attribute lookup (pagination-safe)
             if (source === 'ohss') {
-                resultData = window.lastSearchResults?.jira?.issues?.[index];
+                // Use data-jira-key — immune to pagination offset
+                const jiraKey = resultItem.getAttribute('data-jira-key');
+                resultData = jiraKey
+                    ? window.lastSearchResults?.jira?.issues?.find(i => i.key === jiraKey)
+                    : null;
                 sourceType = 'jira';
             } else if (source === 'slack') {
-                resultData = window.lastSearchResults?.slack?.messages?.[index];
+                // Use channel-id + thread-ts as composite key
+                const channelId = resultItem.getAttribute('data-channel-id');
+                const threadTs  = resultItem.getAttribute('data-thread-ts');
+                resultData = (channelId && threadTs)
+                    ? window.lastSearchResults?.slack?.messages?.find(
+                        m => (m.channel_id || m.channel) === channelId && (m.thread_ts || m.ts) === threadTs)
+                    : null;
                 sourceType = 'slack';
             } else if (source === 'kcs') {
-                resultData = window.lastSearchResults?.kcs?.articles?.[index];
-                console.log(`🔍 KCS Click - Index: ${index}, Has enriched data:`, {
-                    hasEnvironment: !!resultData?.environment,
-                    hasIssue: !!resultData?.issue,
-                    hasResolution: !!resultData?.resolution,
-                    articleId: resultData?.id
-                });
+                // Use data-kcs-id
+                const kcsId = resultItem.getAttribute('data-kcs-id');
+                resultData = kcsId
+                    ? window.lastSearchResults?.kcs?.articles?.find(a => (a.id || a.documentKind) === kcsId)
+                    : null;
+                console.log(`🔍 KCS Click - kcsId: ${kcsId}, Found:`, !!resultData);
                 sourceType = 'kcs';
             } else if (source === 'github') {
-                resultData = window.lastSearchResults?.github?.results?.[index];
+                // Use data-global-idx (_originalIndex embedded at render time)
+                const gIdx = resultItem.getAttribute('data-global-idx');
+                resultData = gIdx != null
+                    ? window.lastSearchResults?.github?.results?.find(r => String(r._originalIndex) === gIdx)
+                    : null;
                 sourceType = 'github';
             } else if (source === 'gitlab') {
-                resultData = window.lastSearchResults?.gitlab?.results?.[index];
+                const gIdx = resultItem.getAttribute('data-global-idx');
+                resultData = gIdx != null
+                    ? window.lastSearchResults?.gitlab?.results?.find(r => String(r._originalIndex) === gIdx)
+                    : null;
                 sourceType = 'gitlab';
             }
         }
@@ -6448,11 +6476,13 @@ if (document.readyState === 'loading') {
 /* ============================================ */
 
 function initSettingsPage() {
-    // Check if we're on the settings page
+    // Only run on the settings page (which has .settings-content), not on main search page
+    if (!document.querySelector('.settings-content')) return;
+
     const searchButton = document.querySelector('.search-button');
     const searchInput = document.querySelector('.search-input');
 
-    if (!searchButton || !searchInput) return; // Not on settings page
+    if (!searchButton || !searchInput) return;
 
     function performSearch() {
         const query = searchInput.value.trim();
@@ -6477,4 +6507,221 @@ if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', initSettingsPage);
 } else {
     initSettingsPage();
+}
+
+// ============================================================================
+// AI SUMMARY + CHAT
+// ============================================================================
+
+let _aiCaseNumber   = null;
+let _aiCaseData     = null;
+let _aiChatHistory  = [];
+let _aiSummaryHtml  = '';
+
+function resetAISummaryPanel() {
+    _aiCaseNumber  = null;
+    _aiCaseData    = null;
+    _aiChatHistory = [];
+    _aiSummaryHtml = '';
+    const trigger    = document.getElementById('ai-summary-trigger');
+    const result     = document.getElementById('ai-summary-result');
+    const chatBox    = document.getElementById('ai-chat-box');
+    const btn        = document.getElementById('ai-summary-btn');
+    const msgs       = document.getElementById('ai-chat-messages');
+    const regenBar   = document.getElementById('ai-regenerate-bar');
+    if (trigger)  trigger.style.display = 'block';
+    if (result)   { result.style.display = 'none'; result.innerHTML = ''; }
+    if (chatBox)  chatBox.style.display  = 'none';
+    if (btn)      { btn.disabled = false; btn.textContent = '🤖 Generate AI Summary'; }
+    if (msgs)     msgs.innerHTML = '';
+    if (regenBar) regenBar.remove();
+}
+
+function setAIContext(caseNumber, caseData) {
+    if (_aiCaseNumber !== caseNumber) {
+        resetAISummaryPanel();
+        _aiCaseNumber = caseNumber;
+        _aiCaseData   = caseData;
+    }
+}
+
+async function triggerAISummary() {
+    if (!_aiCaseNumber) {
+        alert('Please open an SFDC case first.');
+        return;
+    }
+    const btn     = document.getElementById('ai-summary-btn');
+    const result  = document.getElementById('ai-summary-result');
+    const trigger = document.getElementById('ai-summary-trigger');
+
+    btn.disabled = true;
+    btn.textContent = '⏳ Analyzing with Claude…';
+    if (result) { result.style.display = 'block'; result.innerHTML = '<div class="ai-summary-loading"><div class="loading-spinner"></div><p>Generating AI summary — this may take up to 30 seconds…</p></div>'; }
+
+    try {
+        const resp = await fetch('/api/ai/case-summary', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            credentials: 'include',
+            body: JSON.stringify({
+                case_number: _aiCaseNumber,
+                case_data:   _aiCaseData || {}
+            })
+        });
+        const data = await resp.json();
+
+        if (data.timeout) {
+            result.innerHTML = '<p style="color:#fc8181;">⏱ Claude timed out. <button onclick="triggerAISummary()">🔄 Retry</button></p>';
+            btn.disabled = false;
+            btn.textContent = '🤖 Generate AI Summary';
+            return;
+        }
+        if (data.error && !data.html) {
+            result.innerHTML = `<p style="color:#fc8181;">⚠ ${escapeHtml(data.error)}</p>`;
+            btn.disabled = false;
+            btn.textContent = '🤖 Retry AI Summary';
+            return;
+        }
+
+        _aiSummaryHtml = data.html || '';
+
+        // Build linked resources bar
+        let linkedHtml = '';
+        const lr = data.linked_resources || {};
+        const kcsLinks  = lr.kcs      || [];
+        const jiraLinks = lr.jira     || [];
+        const bzLinks   = lr.bugzilla || [];
+        const hasLinks  = kcsLinks.length + jiraLinks.length + bzLinks.length > 0;
+        if (hasLinks) {
+            linkedHtml = '<div class="ai-linked-bar"><strong>🔗 Linked in Case:</strong> ';
+            kcsLinks.slice(0,5).forEach(url => {
+                const id = (url.match(/\/(\d+)/) || [])[1] || 'KCS';
+                linkedHtml += `<a href="${url}" target="_blank" class="ai-pill ai-kcs-pill">📚 KCS-${id}</a> `;
+            });
+            jiraLinks.slice(0,6).forEach(j => {
+                linkedHtml += `<a href="${escapeHtml(j.url)}" target="_blank" class="ai-pill ai-jira-pill">🔧 ${escapeHtml(j.key)}</a> `;
+            });
+            bzLinks.slice(0,4).forEach(b => {
+                linkedHtml += `<a href="${escapeHtml(b.url)}" target="_blank" class="ai-pill ai-bz-pill">🐛 BZ-${b.id}</a> `;
+            });
+            linkedHtml += '</div>';
+        }
+
+        const modeColor = data.mode === 'closed' ? '#68d391' : '#f6ad55';
+        const modeLabel = data.mode === 'closed' ? '📋 Closed Case — Post-mortem Summary' : '🔄 Open Case — Analysis & Suggestions';
+
+        result.innerHTML = `
+            <div class="ai-mode-banner" style="background:${modeColor}18; border-left:4px solid ${modeColor}; padding:8px 12px; margin-bottom:12px; border-radius:4px;">
+                <strong style="color:${modeColor};">${modeLabel}</strong>
+                <span style="color:#718096; font-size:11px; margin-left:8px;">Status: ${escapeHtml(data.status || '')}</span>
+            </div>
+            ${linkedHtml}
+            <div class="ai-summary-body">${data.html || ''}</div>`;
+
+        if (trigger) trigger.style.display = 'none';
+        const chatBox = document.getElementById('ai-chat-box');
+        if (chatBox) chatBox.style.display = 'block';
+
+        btn.textContent = '🔄 Regenerate Summary';
+        btn.disabled = false;
+
+        const existingRegen = document.getElementById('ai-regenerate-bar');
+        if (existingRegen) existingRegen.remove();
+        result.insertAdjacentHTML('afterend', `
+            <div id="ai-regenerate-bar" style="padding: 8px 0 4px;">
+                <button class="ai-summary-btn" style="font-size:12px; padding:6px 14px;" onclick="triggerAISummary()">🔄 Regenerate</button>
+            </div>`);
+
+    } catch (err) {
+        result.innerHTML = `<p style="color:#fc8181;">⚠ Request failed: ${escapeHtml(err.message)}</p>`;
+        btn.disabled = false;
+        btn.textContent = '🤖 Retry AI Summary';
+    }
+}
+
+async function sendAIChat() {
+    const input   = document.getElementById('ai-chat-input');
+    const sendBtn = document.getElementById('ai-chat-send');
+    const msgs    = document.getElementById('ai-chat-messages');
+    if (!input || !msgs) return;
+
+    const question = input.value.trim();
+    if (!question) return;
+
+    const userBubble = document.createElement('div');
+    userBubble.className = 'ai-chat-msg-user';
+    userBubble.textContent = question;
+    msgs.appendChild(userBubble);
+
+    const clusterKeywords = ['check', 'cluster', 'node', 'pod', 'healthy', 'health', 'investigate', 'diagnose', 'logged in', 'login to cluster', 'i had login'];
+    const isClusterQ = clusterKeywords.some(k => question.toLowerCase().includes(k));
+
+    const loadingEl = document.createElement('div');
+    loadingEl.className = 'ai-chat-msg-loading';
+    loadingEl.textContent = isClusterQ
+        ? '🖥️ Running cluster investigation (oc commands) — this may take up to 2 minutes…'
+        : '🔍 Searching SOPs & KCS, then asking Claude…';
+    msgs.appendChild(loadingEl);
+    msgs.scrollTop = msgs.scrollHeight;
+
+    input.value = '';
+    sendBtn.disabled = true;
+
+    const controller = new AbortController();
+    const fetchTimeout = setTimeout(() => controller.abort(), 240000); // 4-minute client-side guard
+
+    try {
+        const resp = await fetch('/api/ai/case-chat', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            credentials: 'include',
+            signal: controller.signal,
+            body: JSON.stringify({
+                case_number:  _aiCaseNumber,
+                case_summary: _aiSummaryHtml,
+                messages:     _aiChatHistory,
+                question:     question
+            })
+        });
+        clearTimeout(fetchTimeout);
+        const data = await resp.json();
+        loadingEl.remove();
+
+        const aiBubble = document.createElement('div');
+        aiBubble.className = 'ai-chat-msg-ai';
+        if (data.error) {
+            aiBubble.style.color = '#fc8181';
+            aiBubble.textContent = '⚠ ' + data.error;
+        } else {
+            aiBubble.innerHTML = data.answer;
+
+            if (data.refs && data.refs.length > 0) {
+                const refBar = document.createElement('div');
+                refBar.className = 'ai-chat-refs';
+                refBar.innerHTML = '<span style="font-size:11px; color:#718096;">Sources: </span>' +
+                    data.refs.map(r => `<a href="${r.url || '#'}" target="_blank" class="ai-pill ${r.type === 'kcs' ? 'ai-kcs-pill' : 'ai-sop-pill'}">${escapeHtml((r.title || 'Ref').substring(0, 35))}</a>`).join(' ');
+                aiBubble.appendChild(refBar);
+            }
+
+            _aiChatHistory.push({role: 'user', content: question});
+            _aiChatHistory.push({role: 'assistant', content: data.answer});
+        }
+        msgs.appendChild(aiBubble);
+        msgs.scrollTop = msgs.scrollHeight;
+    } catch (err) {
+        clearTimeout(fetchTimeout);
+        loadingEl.remove();
+        const errBubble = document.createElement('div');
+        errBubble.className = 'ai-chat-msg-ai';
+        errBubble.style.color = '#fc8181';
+        const msg = err.name === 'AbortError'
+            ? '⚠ Cluster investigation timed out (>4 min). Try a more specific question, e.g. "check cluster operators" or "check node status".'
+            : '⚠ Request failed: ' + err.message;
+        errBubble.textContent = msg;
+        msgs.appendChild(errBubble);
+        msgs.scrollTop = msgs.scrollHeight;
+    } finally {
+        sendBtn.disabled = false;
+        input.focus();
+    }
 }

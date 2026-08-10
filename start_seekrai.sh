@@ -61,6 +61,12 @@ else
     if [ -n "$DISABLE_SSO" ]; then
         ENV_VARS="$ENV_VARS DISABLE_SSO=1"
     fi
+    if [ -n "$USER_KEY" ]; then
+        ENV_VARS="$ENV_VARS USER_KEY=$USER_KEY"
+    fi
+    if [ -n "$AI_API_TOKEN" ]; then
+        ENV_VARS="$ENV_VARS AI_API_TOKEN=$AI_API_TOKEN"
+    fi
     tmux new-session -d -s seekrai-ui "cd $(pwd) && $ENV_VARS python3 seekrWebUI_server.py"
     sleep 2
     echo "  Started UI service"

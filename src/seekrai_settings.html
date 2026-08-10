@@ -598,11 +598,250 @@
                 </div>
             </div>
 
+            <!-- AI Configuration Section -->
+            <div class="settings-section" style="margin-top:2rem;">
+                <div class="section-header">
+                    <h2 class="section-title">AI Configuration</h2>
+                    <p class="section-description">Configure the AI API endpoint and token used for intelligent search and case investigation</p>
+                </div>
+                <div class="settings-card" id="ai-config-section">
+                    <div class="card-header">
+                        <div class="card-title-group">
+                            <h3 class="card-title">AI API Settings</h3>
+                        </div>
+                        <p class="card-description">
+                            The AI API is used for intelligent search assistance, case investigation with oc commands, and case summaries.
+                        </p>
+                    </div>
+                    <div class="card-body">
+                        <div class="form-group">
+                            <label for="aiApiUrl" class="form-label">AI API URL</label>
+                            <input type="text" id="aiApiUrl" name="aiApiUrl" class="form-input"
+                                placeholder="https://..." />
+                            <p class="field-help">Base URL of the Claude AI API endpoint. Leave as default if using the standard Red Hat AI gateway.</p>
+                        </div>
+                        <div class="form-group">
+                            <label for="aiApiToken" class="form-label">
+                                AI API Token
+                                <span class="label-hint">(Optional — uses server default if blank)</span>
+                            </label>
+                            <div class="input-with-action">
+                                <input type="password" id="aiApiToken" name="aiApiToken" class="form-input"
+                                    placeholder="Enter your API token (optional)" />
+                                <button type="button" class="toggle-visibility-btn" id="toggleAiToken">
+                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                                        <circle cx="12" cy="12" r="3"/>
+                                    </svg>
+                                </button>
+                            </div>
+                            <p class="field-help">Your personal API token. If not set, the server's configured token is used.</p>
+                        </div>
+                        <div class="form-actions">
+                            <button type="button" class="btn btn-secondary" id="testAiConfigBtn">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+                                </svg>
+                                Test Connection
+                            </button>
+                            <button type="button" class="btn btn-primary" id="saveAiConfigBtn">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+                                    <polyline points="17 21 17 13 7 13 7 21"/>
+                                    <polyline points="7 3 7 8 15 8"/>
+                                </svg>
+                                Save Settings
+                            </button>
+                        </div>
+                        <div id="aiConfigStatusMessage" class="status-message"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Slack Default Channels Section -->
+            <div class="settings-section" style="margin-top:2rem;padding-bottom:2rem;">
+                <div class="section-header">
+                    <h2 class="section-title">Slack Default Channels</h2>
+                    <p class="section-description">Manage which Slack channels appear as filter options in the search panel</p>
+                </div>
+                <div class="settings-card" id="slack-channels-settings-section">
+                    <div class="card-header">
+                        <div class="card-title-group">
+                            <h3 class="card-title">Default Channel List</h3>
+                        </div>
+                        <p class="card-description">
+                            These channels appear as filter options when searching Slack. Add channels to monitor or remove ones you don't need.
+                        </p>
+                    </div>
+                    <div class="card-body">
+                        <div id="slackChannelsList" style="margin-bottom:1rem;display:flex;flex-wrap:wrap;gap:0.5rem;min-height:2.5rem;"></div>
+                        <div class="form-group">
+                            <label for="newSlackChannel" class="form-label">Add Channel</label>
+                            <div style="display:flex;gap:0.5rem;align-items:center;">
+                                <input type="text" id="newSlackChannel" class="form-input"
+                                    placeholder="channel-name (without #)" style="flex:1;max-width:360px;" />
+                                <button type="button" class="btn btn-secondary" id="addSlackChannelBtn" style="white-space:nowrap;">
+                                    + Add
+                                </button>
+                            </div>
+                            <p class="field-help">Enter the channel name without the # prefix, then click Add.</p>
+                        </div>
+                        <div class="form-actions">
+                            <button type="button" class="btn btn-primary" id="saveSlackChannelsBtn">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+                                    <polyline points="17 21 17 13 7 13 7 21"/>
+                                    <polyline points="7 3 7 8 15 8"/>
+                                </svg>
+                                Save Channels
+                            </button>
+                        </div>
+                        <div id="slackChannelsStatusMessage" class="status-message"></div>
+                    </div>
+                </div>
+            </div>
+
         </div>
     </div>
 
     <!-- External JavaScript -->
     <script src="/src/token_manager.js?v=3.0"></script>
     <script src="/seekrai_ui.js?v=52.0.JS_CONSOLIDATED"></script>
+    <script>
+    // ─── AI Config ───────────────────────────────────────────────────────────
+    (async function initAiConfig() {
+        try {
+            const r = await fetch('/api/settings/ai-config', {credentials: 'include'});
+            if (r.ok) {
+                const d = await r.json();
+                const urlEl = document.getElementById('aiApiUrl');
+                if (urlEl && d.ai_url) urlEl.value = d.ai_url;
+                const tokenEl = document.getElementById('aiApiToken');
+                if (tokenEl && d.has_token) tokenEl.placeholder = '(token saved — enter to replace)';
+            }
+        } catch(e) {}
+    })();
+
+    document.getElementById('toggleAiToken')?.addEventListener('click', function() {
+        const inp = document.getElementById('aiApiToken');
+        inp.type = inp.type === 'password' ? 'text' : 'password';
+    });
+
+    document.getElementById('testAiConfigBtn')?.addEventListener('click', async function() {
+        const statusEl = document.getElementById('aiConfigStatusMessage');
+        const url = document.getElementById('aiApiUrl').value.trim();
+        const token = document.getElementById('aiApiToken').value.trim();
+        statusEl.innerHTML = '<p class="info">⏳ Testing connection...</p>';
+        statusEl.style.display = 'block';
+        try {
+            const r = await fetch('/api/settings/test-ai-config', {
+                method: 'POST', credentials: 'include',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ai_url: url, ai_token: token})
+            });
+            const d = await r.json();
+            statusEl.innerHTML = `<p class="${d.valid ? 'success' : 'error'}">${d.message}</p>`;
+            statusEl.style.display = 'block';
+        } catch(e) {
+            statusEl.innerHTML = `<p class="error">❌ Request failed: ${e.message}</p>`;
+            statusEl.style.display = 'block';
+        }
+    });
+
+    document.getElementById('saveAiConfigBtn')?.addEventListener('click', async function() {
+        const statusEl = document.getElementById('aiConfigStatusMessage');
+        const url = document.getElementById('aiApiUrl').value.trim();
+        const token = document.getElementById('aiApiToken').value.trim();
+        if (!url) {
+            statusEl.innerHTML = '<p class="error">⚠️ API URL is required</p>';
+            statusEl.style.display = 'block';
+            return;
+        }
+        statusEl.innerHTML = '<p class="info">⏳ Saving...</p>';
+        statusEl.style.display = 'block';
+        try {
+            const r = await fetch('/api/settings/ai-config', {
+                method: 'POST', credentials: 'include',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ai_url: url, ai_token: token})
+            });
+            const d = await r.json();
+            statusEl.innerHTML = `<p class="${d.success ? 'success' : 'error'}">${d.success ? '✅ ' : '❌ '}${d.message}</p>`;
+            statusEl.style.display = 'block';
+        } catch(e) {
+            statusEl.innerHTML = `<p class="error">❌ Save failed: ${e.message}</p>`;
+            statusEl.style.display = 'block';
+        }
+    });
+
+    // ─── Slack Channels ───────────────────────────────────────────────────────
+    let _settingsChannels = [];
+
+    function renderChannelTags() {
+        const container = document.getElementById('slackChannelsList');
+        if (!container) return;
+        container.innerHTML = '';
+        if (_settingsChannels.length === 0) {
+            container.innerHTML = '<span style="color:#888;font-size:0.9em;">No channels configured</span>';
+            return;
+        }
+        _settingsChannels.forEach((ch, idx) => {
+            const tag = document.createElement('span');
+            tag.style.cssText = 'display:inline-flex;align-items:center;gap:4px;background:#f3f4f6;border:1px solid #d1d5db;border-radius:9999px;padding:3px 10px;font-size:0.85em;';
+            tag.innerHTML = `#${ch} <button onclick="removeChannel(${idx})" style="background:none;border:none;cursor:pointer;color:#6b7280;font-size:1em;line-height:1;padding:0 2px;" title="Remove">&times;</button>`;
+            container.appendChild(tag);
+        });
+    }
+
+    window.removeChannel = function(idx) {
+        _settingsChannels.splice(idx, 1);
+        renderChannelTags();
+    };
+
+    (async function initSlackChannelsSettings() {
+        try {
+            const r = await fetch('/api/settings/slack-channels', {credentials: 'include'});
+            if (r.ok) {
+                const d = await r.json();
+                if (Array.isArray(d.channels)) { _settingsChannels = d.channels; }
+            }
+        } catch(e) {}
+        renderChannelTags();
+    })();
+
+    document.getElementById('addSlackChannelBtn')?.addEventListener('click', function() {
+        const inp = document.getElementById('newSlackChannel');
+        const ch = inp.value.trim().replace(/^#/, '');
+        if (!ch) return;
+        if (!_settingsChannels.includes(ch)) {
+            _settingsChannels.push(ch);
+            renderChannelTags();
+        }
+        inp.value = '';
+    });
+
+    document.getElementById('newSlackChannel')?.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') document.getElementById('addSlackChannelBtn').click();
+    });
+
+    document.getElementById('saveSlackChannelsBtn')?.addEventListener('click', async function() {
+        const statusEl = document.getElementById('slackChannelsStatusMessage');
+        statusEl.innerHTML = '<p class="info">⏳ Saving...</p>';
+        statusEl.style.display = 'block';
+        try {
+            const r = await fetch('/api/settings/slack-channels', {
+                method: 'POST', credentials: 'include',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({channels: _settingsChannels})
+            });
+            const d = await r.json();
+            statusEl.innerHTML = `<p class="${d.success ? 'success' : 'error'}">${d.success ? '✅ ' : '❌ '}${d.message}</p>`;
+            statusEl.style.display = 'block';
+        } catch(e) {
+            statusEl.innerHTML = `<p class="error">❌ Save failed: ${e.message}</p>`;
+            statusEl.style.display = 'block';
+        }
+    });
+    </script>
 </body>
 </html>

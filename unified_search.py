@@ -618,7 +618,9 @@ def search_kcs(query: str, max_results: int = 20, config: Dict = None) -> Dict:
 # SOP/Document Search Functions (ask-sre semantic search)
 # ============================================================================
 
-# ask-sre MCP Server configuration
+ASK_SRE_DIR = os.getenv("ASK_SRE_DIR", "/home/jayu/asksre/ask-sre")
+
+# ask-sre MCP Server configuration (used by AI chat, not by SOP search)
 MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "http://localhost:8000")
 _mcp_session_id = None
 
@@ -801,93 +803,128 @@ def _keyword_search_sop_db(query: str, limit: int = 20) -> List[Dict]:
         return []
 
 
+# Inline Python script run under `poetry run` in the ask-sre venv
+_SOP_SEARCH_SCRIPT = r"""
+import sys, json
+
+query = sys.argv[1]
+max_results = int(sys.argv[2])
+
+# Redirect stdout to stderr so ask_sre startup banners don't contaminate JSON output
+_real_stdout = sys.stdout
+sys.stdout = sys.stderr
+
+term_map = [
+    ("master node", "control plane"),
+    ("master nodes", "control plane nodes"),
+    ("worker node", "machine pool"),
+    ("worker nodes", "machine pools"),
+]
+stop_words = {"how","to","the","a","an","on","in","for","of","is",
+              "are","was","with","what","when","why","does","do","can"}
+
+def expand(q):
+    ql = q.lower()
+    for src, dst in term_map:
+        if src in ql and dst not in ql:
+            return ql.replace(src, dst)
+    return q
+
+from ask_sre.mcp.main import search_sre_docs
+try:
+    from ask_sre.db.pgvector_db import PgVectorDB
+    _pgvector_ok = True
+except Exception:
+    _pgvector_ok = False
+
+expanded = expand(query)
+queries = [query] if expanded == query else [query, expanded]
+fetch_k = min(max_results * 3, 30)
+
+ALLOWED_SOURCES = {"local_ops_sop", "managed_openshift_docs"}
+seen = {}
+for q in queries:
+    for r in search_sre_docs(problem_statement=q, max_results=fetch_k):
+        if r.get("source") not in ALLOWED_SOURCES:
+            continue
+        fp = r.get("file_path") or ""
+        if not fp:
+            continue
+        dedup_key = r.get("source", "") + ":" + fp
+        if dedup_key not in seen or r.get("similarity", 0) > seen[dedup_key].get("similarity", 0):
+            seen[dedup_key] = r
+
+if _pgvector_ok:
+    kw_src = expanded if expanded != query else query
+    keywords = [w for w in kw_src.lower().split() if len(w) > 3 and w not in stop_words]
+    if keywords:
+        try:
+            db = PgVectorDB()
+            conn = db.connect()
+            cur = conn.cursor()
+            conds = ["(metadata->>'file_path' ILIKE %s OR metadata->>'title' ILIKE %s)"] * len(keywords)
+            params = []
+            for w in keywords:
+                params.extend([f"%{w}%", f"%{w}%"])
+            cur.execute(
+                "SELECT DISTINCT ON (metadata->>'file_path', metadata->>'source') metadata, document FROM sre_docs "
+                "WHERE " + " AND ".join(conds) + " AND metadata->>'source' IN ('local_ops_sop', 'managed_openshift_docs') LIMIT 10",
+                params
+            )
+            for row in cur.fetchall():
+                m = row["metadata"]
+                fp = m.get("file_path", "")
+                src = m.get("source", "local_ops_sop")
+                dedup_key = src + ":" + fp
+                if fp and dedup_key not in seen:
+                    seen[dedup_key] = {
+                        "source": src,
+                        "file_path": fp,
+                        "title": m.get("title", fp),
+                        "document_text": row.get("document", ""),
+                        "similarity": 0.90,
+                        "view_uri": "",
+                    }
+            conn.close()
+        except Exception:
+            pass
+
+sops = sorted(seen.values(), key=lambda x: x.get("similarity", 0), reverse=True)
+output = [
+    {
+        "id": r.get("file_path") or "N/A",
+        "title": r.get("title", "No title"),
+        "summary": (r.get("document_text") or "")[:400],
+        "score": r.get("similarity", 0),
+        "file_path": r.get("file_path", ""),
+        "url": r.get("view_uri") or "",
+        "source": r.get("source", "local_ops_sop"),
+    }
+    for r in sops
+]
+sys.stdout = _real_stdout
+print(json.dumps(output))
+"""
+
+
 def search_sop(query: str, max_results: int = 20, config: Dict = None) -> Dict:
-    """Search SOP documents via ask-sre semantic search + keyword fallback"""
+    """Search ops-sop docs via ask-sre semantic search (poetry run subprocess)."""
     try:
-        # Request extra results to account for deduplication across chunks
-        top_k = min(max(max_results * 3, 30), 60)
+        result = subprocess.run(
+            ["poetry", "run", "python3", "-c", _SOP_SEARCH_SCRIPT, query, str(min(max_results, 20))],
+            capture_output=True, text=True, timeout=60,
+            cwd=ASK_SRE_DIR
+        )
+        if result.returncode != 0:
+            print(f"⚠️ SOP search stderr: {result.stderr[-500:]}")
+            return {"sops": [], "total": 0, "error": result.stderr[-200:]}
 
-        raw_results = call_ask_sre("search_sre_docs", {
-            "problem_statement": query,
-            "max_results": top_k
-        })
+        sops = json.loads(result.stdout)
+        print(f"✅ ask-sre: Found {len(sops)} SOP results")
+        return {"sops": sops, "total": len(sops)}
 
-        if not raw_results:
-            raw_results = []
-
-        # Deduplicate by file_path — keep the chunk with the highest similarity
-        seen = {}
-        query_words = [w.lower() for w in query.split() if len(w) > 2]
-        for result in raw_results:
-            if "note" in result or not result.get("similarity"):
-                continue
-
-            file_path = result.get("file_path", "")
-            source = result.get("source", "")
-            dedup_key = f"{source}:{file_path}"
-            similarity = result.get("similarity", 0)
-
-            # Boost score when query words appear in the file name or path
-            path_lower = file_path.lower()
-            keyword_matches = sum(1 for w in query_words if w in path_lower)
-            boosted_score = similarity + (keyword_matches * 0.15)
-
-            if dedup_key not in seen or boosted_score > seen[dedup_key]["score"]:
-                seen[dedup_key] = {
-                    "id": result.get("id", "N/A"),
-                    "title": result.get("title", "No title"),
-                    "summary": (result.get("document_text", "") or "")[:500],
-                    "score": boosted_score,
-                    "category": result.get("category", ""),
-                    "severity": result.get("severity", ""),
-                    "source": source,
-                    "file_path": file_path,
-                    "file_name": result.get("file_name", ""),
-                    "service_name": result.get("service_name", ""),
-                    "url": ""
-                }
-
-        # Supplement with keyword search from PostgreSQL for exact matches
-        keyword_results = _keyword_search_sop_db(query, limit=10)
-        for kr in keyword_results:
-            file_path = kr.get("file_path", "")
-            source = kr.get("source", "")
-            dedup_key = f"{source}:{file_path}"
-
-            if dedup_key not in seen:
-                path_lower = file_path.lower()
-                keyword_matches = sum(1 for w in query_words if w in path_lower)
-                # Keyword-only results get a base score + path match bonus
-                score = 0.05 + (keyword_matches * 0.15)
-                seen[dedup_key] = {
-                    "id": "N/A",
-                    "title": kr.get("title", "No title"),
-                    "summary": kr.get("summary", "")[:500],
-                    "score": score,
-                    "category": kr.get("category", ""),
-                    "severity": kr.get("severity", ""),
-                    "source": source,
-                    "file_path": file_path,
-                    "file_name": kr.get("file_name", ""),
-                    "service_name": kr.get("service_name", ""),
-                    "url": ""
-                }
-
-        # Sort by boosted score and return top results
-        sops = sorted(seen.values(), key=lambda x: x["score"], reverse=True)[:max_results]
-
-        print(f"✅ ask-sre: {len(raw_results)} semantic + {len(keyword_results)} keyword → {len(seen)} unique → {len(sops)} returned")
-        return {
-            "sops": sops,
-            "total": len(sops)
-        }
-
-    except requests.exceptions.ConnectionError:
-        return {
-            "sops": [],
-            "total": 0,
-            "error": "ask-sre MCP server not running. Start it with: poetry run ask-sre mcp --transport http --port 8000"
-        }
+    except subprocess.TimeoutExpired:
+        return {"sops": [], "total": 0, "error": "SOP search timed out"}
     except Exception as e:
         print(f"SOP search error: {e}")
         return {"sops": [], "total": 0, "error": str(e)}
@@ -1027,9 +1064,18 @@ def search_slack(query: str, max_results: int = 100, channels: List[str] = None,
         print(f"  XOXD Token: {'SET (' + slack_xoxd[:10] + '...' + slack_xoxd[-10:] + ')' if slack_xoxd else 'NOT SET'}")
         print(f"  Workspace: {slack_workspace_url}")
 
-        # Slack doesn't support wildcards in channel names, so search all channels
-        # then filter results by channel name patterns
+        # Empty list means user deselected all channels — return nothing
+        if channels is not None and len(channels) == 0:
+            return {"messages": [], "total": 0, "channels": COMMON_SLACK_CHANNELS}
+
+        # Build search query with optional channel filter (Slack's in:#channel syntax)
         search_query = query
+        if channels and channels != ['ALL']:
+            if len(channels) == 1:
+                search_query = f"{query} in:#{channels[0]}"
+            else:
+                channel_parts = " OR ".join([f"in:#{ch}" for ch in channels])
+                search_query = f"{query} {channel_parts}"
         print(f"  📝 Slack search query: {search_query}")
 
         # Use same directory as unified_search.py for slack_search_standalone.py and .mcp.json
@@ -1417,8 +1463,9 @@ def search_all(query: str, max_results_per_source: int = 20, slack_channels: Lis
                 print(f"❌ SOP search exception: {e}")
                 sop_results = {"sops": [], "total": 0, "error": str(e)}
 
-            # GitHub results come from ask-sre SOP merge below
+            # GitHub results (ops-sop) and OpenShift Docs come from ask-sre SOP merge below
             github_results = {"results": [], "total": 0}
+            docs_results = {"results": [], "total": 0}
 
             try:
                 gitlab_results = gitlab_future.result()
@@ -1426,8 +1473,7 @@ def search_all(query: str, max_results_per_source: int = 20, slack_channels: Lis
                 print(f"❌ GitLab search exception: {e}")
                 gitlab_results = {"results": [], "total": 0, "error": str(e)}
 
-        # Merge ask-sre SOP results into GitHub/KCS by source type
-        # Both local_ops_sop (openshift/ops-sop) and managed_openshift_docs are GitHub repos
+        # Merge ask-sre SOP results by source type
         if sop_results.get("sops"):
             for sop in sop_results["sops"]:
                 source_type = sop.get("source", "")
@@ -1439,28 +1485,23 @@ def search_all(query: str, max_results_per_source: int = 20, slack_channels: Lis
                         "path": sop.get("file_path", ""),
                         "repository": "openshift/ops-sop",
                         "url": f"https://github.com/openshift/ops-sop/blob/master/{sop.get('file_path', '')}",
-                        "score": sop.get("score", 0) * 1000,
                         "language": "Markdown",
                         "ask_sre": True,
                         "similarity": sop.get("score", 0),
-                        "category": sop.get("category", ""),
-                        "severity": sop.get("severity", ""),
                         "summary": doc_text,
-                        "service_name": sop.get("service_name", ""),
+                        "title": sop.get("title", sop.get("file_name", "")),
                     })
                 elif source_type == "managed_openshift_docs":
-                    github_results["results"].append({
+                    docs_results["results"].append({
                         "name": sop.get("file_name", sop.get("title", "")),
                         "path": sop.get("file_path", ""),
                         "repository": "openshift/openshift-docs",
                         "url": f"https://github.com/openshift/openshift-docs/blob/main/{sop.get('file_path', '')}",
-                        "score": sop.get("score", 0) * 1000,
-                        "language": "Markdown",
+                        "language": "AsciiDoc",
                         "ask_sre": True,
                         "similarity": sop.get("score", 0),
-                        "category": sop.get("category", ""),
-                        "severity": sop.get("severity", ""),
                         "summary": doc_text,
+                        "title": sop.get("title", sop.get("file_name", "")),
                     })
                 elif source_type == "redhat_customer_portal":
                     kcs_results.setdefault("articles", []).append({
@@ -1474,7 +1515,8 @@ def search_all(query: str, max_results_per_source: int = 20, slack_channels: Lis
                     })
 
             # Update totals
-            github_results["total"] = len(github_results.get("results", []))
+            github_results["total"] = len(github_results["results"])
+            docs_results["total"] = len(docs_results["results"])
             gitlab_results["total"] = len(gitlab_results.get("results", []))
             kcs_results["total"] = len(kcs_results.get("articles", []))
 
@@ -1485,6 +1527,7 @@ def search_all(query: str, max_results_per_source: int = 20, slack_channels: Lis
             "kcs": kcs_results,
             "sop": sop_results,
             "github": github_results,
+            "docs": docs_results,
             "gitlab": gitlab_results,
             "query": query
         }
