@@ -42,10 +42,7 @@ SEARCH_HISTORY_FILE = 'user_search_history.json'
 # ============================================================================
 # Claude AI + SFDC Configuration
 # ============================================================================
-CLAUDE_API_BASE = os.getenv(
-    "CLAUDE_API_BASE",
-    "https://claude--apicast-production.apps.int.stc.ai.prod.us-east-1.aws.paas.redhat.com:443"
-)
+CLAUDE_API_BASE = os.getenv("CLAUDE_API_BASE", "")
 CLAUDE_MODEL_ID = os.getenv("MODEL_ID", "claude-sonnet-4")
 CLAUDE_USER_KEY = os.getenv("USER_KEY") or os.getenv("AI_API_TOKEN", "")
 SFDC_API_BASE   = "https://access.redhat.com"

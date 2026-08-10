@@ -61,6 +61,9 @@ else
     if [ -n "$DISABLE_SSO" ]; then
         ENV_VARS="$ENV_VARS DISABLE_SSO=1"
     fi
+    if [ -n "$CLAUDE_API_BASE" ]; then
+        ENV_VARS="$ENV_VARS CLAUDE_API_BASE=$CLAUDE_API_BASE"
+    fi
     if [ -n "$USER_KEY" ]; then
         ENV_VARS="$ENV_VARS USER_KEY=$USER_KEY"
     fi
