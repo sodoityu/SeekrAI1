@@ -164,9 +164,7 @@ tmux ls
 
 1. Open your browser and go to: **http://localhost:5501/seekr/login**
 2. Enter your **Kerberos username** (e.g., `jdoe`)
-3. Enter your **password + authenticator token** in the password field
-   - Type your Kerberos password immediately followed by your 6-digit authenticator code
-   - Example: `MyPassword123456` (where `123456` is your authenticator token)
+3. Enter your **Kerberos password** in the password field
 4. Click **Sign In**
 
 ### Configure API Tokens
@@ -226,8 +224,7 @@ sudo lsof -i :5501   # Check port 5501
 ### "Invalid username or password" at login
 
 **Fix:**
-- Make sure you're appending your authenticator token directly after your password (no spaces)
-- Example: If your password is `MyPass` and your token is `123456`, type `MyPass123456`
+- Make sure you're using your Kerberos password
 - Verify your Kerberos credentials work: `kinit your-username@IPA.REDHAT.COM`
 
 ---

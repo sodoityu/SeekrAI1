@@ -2626,6 +2626,33 @@ const SEVERITY_RANK = {
     '4 (low)': 4, '4': 4, 'low': 4
 };
 
+// Score a KCS article by product relevance to managed OpenShift (ROSA/ARO/HCP/OSD).
+// 0 = priority product, 1 = generic/unknown, 2 = unrelated product
+function getKCSProductScore(article) {
+    const text = [
+        article.title || '',
+        article.documentTitle || '',
+        article.product || '',
+        article.summary || '',
+    ].join(' ').toLowerCase();
+
+    // Use word-boundary regex to avoid false matches (e.g. 'aro' inside 'workaround')
+    const PRIORITY_PATTERNS = [
+        /\brosa\b/, /\baro\b/, /\bhcp\b/, /hosted control plane/,
+        /openshift service on aws/, /azure red hat openshift/,
+        /openshift dedicated/, /\bosd\b/, /managed openshift/,
+    ];
+    const UNRELATED_PATTERNS = [
+        /openstack/, /red hat satellite/, /satellite [67]/, /\bmicroshift\b/,
+        /\bansible\b/, /enterprise linux/, /\brhel\b/, /\bvirtualization\b/,
+        /\bceph\b/, /\brhosp\b/,
+    ];
+
+    if (PRIORITY_PATTERNS.some(p => p.test(text))) return 0;
+    if (UNRELATED_PATTERNS.some(p => p.test(text))) return 2;
+    return 1;
+}
+
 function applySortToResults() {
     const results = window.lastSearchResults;
     if (!results) return;
@@ -2682,9 +2709,21 @@ function applySortToResults() {
         if (results.sfdc?.cases) results.sfdc.cases.sort((a, b) => a._originalIndex - b._originalIndex);
         if (results.jira?.issues) results.jira.issues.sort((a, b) => a._originalIndex - b._originalIndex);
         if (results.slack?.messages) results.slack.messages.sort((a, b) => a._originalIndex - b._originalIndex);
-        if (results.kcs?.articles) results.kcs.articles.sort((a, b) => a._originalIndex - b._originalIndex);
         if (results.github?.results) results.github.results.sort((a, b) => a._originalIndex - b._originalIndex);
         if (results.gitlab?.results) results.gitlab.results.sort((a, b) => a._originalIndex - b._originalIndex);
+
+        // KCS: product-boosted relevance sort
+        // Score 0 = ROSA/ARO/HCP/OSD (highest priority)
+        // Score 1 = generic OpenShift / unknown
+        // Score 2 = unrelated products (OpenStack, Satellite, RHEL, etc.)
+        if (results.kcs?.articles) {
+            results.kcs.articles.sort((a, b) => {
+                const scoreA = getKCSProductScore(a);
+                const scoreB = getKCSProductScore(b);
+                if (scoreA !== scoreB) return scoreA - scoreB;
+                return a._originalIndex - b._originalIndex; // stable: preserve API order within same group
+            });
+        }
     }
 
     // Reset pagination to page 1 after re-sort
@@ -2761,6 +2800,16 @@ function displaySearchResults(results, query) {
     if (results.kcs?.articles) results.kcs.articles.forEach((item, i) => item._originalIndex = i);
     if (results.github?.results) results.github.results.forEach((item, i) => item._originalIndex = i);
     if (results.gitlab?.results) results.gitlab.results.forEach((item, i) => item._originalIndex = i);
+
+    // Apply product-boosted sort to KCS before first render
+    if (results.kcs?.articles) {
+        results.kcs.articles.sort((a, b) => {
+            const scoreA = getKCSProductScore(a);
+            const scoreB = getKCSProductScore(b);
+            if (scoreA !== scoreB) return scoreA - scoreB;
+            return a._originalIndex - b._originalIndex;
+        });
+    }
 
     // Reset sort dropdown to Relevance for new searches
     const sortSelect = document.querySelector('.sort-select');
@@ -3295,6 +3344,7 @@ function renderJiraResults(jira) {
                 </div>
             </div>
             <div class="result-meta" style="display: flex; gap: 20px; margin: 8px 0; font-size: 14px; color: #666;">
+                <span><strong>Project:</strong> ${issue.project_name || issue.project || 'N/A'}</span>
                 <span><strong>Priority:</strong> ${issue.priority || 'N/A'}</span>
                 <span><strong>Status:</strong> ${issue.status || 'Unknown'}</span>
                 <span><strong>Work Type:</strong> ${issue.work_type || issue.type || 'N/A'}</span>
@@ -4702,9 +4752,13 @@ function showDetailPanel(resultData, source) {
                         if (cached.slack_threads && cached.slack_threads.length > 0) {
                             updateRelatedSlackThreads(cached.slack_threads);
                         }
+                        if (cached.icm_tickets && cached.icm_tickets.length > 0) {
+                            updateRelatedICMTickets(cached.icm_tickets);
+                        }
                         if ((!cached.kcs_articles || cached.kcs_articles.length === 0) &&
                             (!cached.redhat_docs || cached.redhat_docs.length === 0) &&
-                            (!cached.slack_threads || cached.slack_threads.length === 0)) {
+                            (!cached.slack_threads || cached.slack_threads.length === 0) &&
+                            (!cached.icm_tickets || cached.icm_tickets.length === 0)) {
                             const relatedItems = detailPanel.querySelector('.related-items');
                             if (relatedItems) {
                                 relatedItems.innerHTML = '<p style="color: #666; padding: 1rem;">No related content found in case comments</p>';
@@ -4722,7 +4776,8 @@ function showDetailPanel(resultData, source) {
                                 relatedContentCache.ohss[cacheKey] = {
                                     kcs_articles: data.kcs_articles || [],
                                     redhat_docs: data.redhat_docs || [],
-                                    slack_threads: data.slack_threads || []
+                                    slack_threads: data.slack_threads || [],
+                                    icm_tickets: data.icm_tickets || []
                                 };
 
                                 if (data.kcs_articles && data.kcs_articles.length > 0) {
@@ -4734,9 +4789,13 @@ function showDetailPanel(resultData, source) {
                                 if (data.slack_threads && data.slack_threads.length > 0) {
                                     updateRelatedSlackThreads(data.slack_threads);
                                 }
+                                if (data.icm_tickets && data.icm_tickets.length > 0) {
+                                    updateRelatedICMTickets(data.icm_tickets);
+                                }
                                 if ((!data.kcs_articles || data.kcs_articles.length === 0) &&
                                     (!data.redhat_docs || data.redhat_docs.length === 0) &&
-                                    (!data.slack_threads || data.slack_threads.length === 0)) {
+                                    (!data.slack_threads || data.slack_threads.length === 0) &&
+                                    (!data.icm_tickets || data.icm_tickets.length === 0)) {
                                     const relatedItems = detailPanel.querySelector('.related-items');
                                     if (relatedItems) {
                                         relatedItems.innerHTML = '<p style="color: #666; padding: 1rem;">No related content found in case comments</p>';
@@ -5057,6 +5116,12 @@ function showDetailPanel(resultData, source) {
                     if (data.slack_threads && Array.isArray(data.slack_threads) && data.slack_threads.length > 0) {
                         console.log(`✅ Found ${data.slack_threads.length} Slack threads in SFDC case comments`);
                         updateRelatedSlackThreads(data.slack_threads);
+                    }
+
+                    // Update ICM Tickets from SFDC case comments
+                    if (data.icm_tickets && Array.isArray(data.icm_tickets) && data.icm_tickets.length > 0) {
+                        console.log(`✅ Found ${data.icm_tickets.length} ICM tickets in SFDC case comments`);
+                        updateRelatedICMTickets(data.icm_tickets);
                     }
                 }
             })
@@ -5784,6 +5849,63 @@ function updateRelatedSOPLinks(githubLinks) {
 
     if (sopTab && sopTab.classList.contains('active')) {
         sopTab.click();
+    }
+}
+
+// Update Related Content ICM Tickets
+function updateRelatedICMTickets(icmTickets) {
+    const relatedTabs = document.querySelector('.related-tabs');
+    if (!relatedTabs) return;
+
+    let icmTab = document.querySelector('.related-tab[data-content="icm"]');
+
+    if (!icmTab && icmTickets.length > 0) {
+        icmTab = document.createElement('button');
+        icmTab.className = 'related-tab';
+        icmTab.setAttribute('data-content', 'icm');
+        relatedTabs.appendChild(icmTab);
+
+        if (relatedTabs.children.length === 1) {
+            icmTab.classList.add('active');
+        }
+    }
+
+    if (icmTab) {
+        icmTab.textContent = `ICM Tickets (${icmTickets.length})`;
+
+        if (!icmTab.dataset.listenerAdded) {
+            icmTab.addEventListener('click', () => {
+                document.querySelectorAll('.related-tab').forEach(t => t.classList.remove('active'));
+                icmTab.classList.add('active');
+
+                const relatedItemsContainer = document.querySelector('.related-items');
+                if (relatedItemsContainer) {
+                    if (icmTickets.length > 0) {
+                        relatedItemsContainer.innerHTML = icmTickets.map(ticket => `
+                            <a href="${ticket.url}" target="_blank" class="related-item">
+                                <img src="/src/images/icm-logo.png" class="related-icon" alt="ICM" />
+                                <div class="related-info">
+                                    <div class="related-title">${ticket.title}</div>
+                                    <div class="related-subtitle">Microsoft ICM Portal</div>
+                                </div>
+                                <svg class="external-link" viewBox="0 0 16 16" fill="currentColor">
+                                    <path d="M12 2h2v2M14 2L8 8M6 3H4a2 2 0 00-2 2v8a2 2 0 002 2h8a2 2 0 002-2v-2"/>
+                                </svg>
+                            </a>
+                        `).join('');
+                    } else {
+                        relatedItemsContainer.innerHTML = '<p style="color: #666; padding: 16px;">No ICM tickets found</p>';
+                    }
+                }
+            });
+            icmTab.dataset.listenerAdded = 'true';
+        }
+    }
+
+    window.relatedICMContent = icmTickets;
+
+    if (icmTab && icmTab.classList.contains('active')) {
+        icmTab.click();
     }
 }
 

@@ -440,6 +440,7 @@ def search_jira(query: str, max_results: int = 20, config: Dict = None, created_
             # Handle None values - Jira returns None for missing fields, not {}
             project = fields.get('project') or {}
             project_key = project.get('key', 'N/A')
+            project_name = project.get('name', project_key)
 
             status = fields.get('status') or {}
             status_name = status.get('name', 'N/A')
@@ -483,6 +484,7 @@ def search_jira(query: str, max_results: int = 20, config: Dict = None, created_
             issues.append({
                 'key': issue['key'],
                 'project': project_key,
+                'project_name': project_name,
                 'summary': fields.get('summary', 'N/A'),
                 'status': status_name,
                 'priority': priority_name,
@@ -2693,7 +2695,7 @@ def get_sfdc_case_details(case_number):
 
 @app.route('/api/sfdc/case/<case_number>/related-content', methods=['GET'])
 def get_sfdc_case_related_content(case_number):
-    """Fetch KCS articles, Red Hat docs, and Slack threads from SFDC case comments"""
+    """Fetch KCS articles, Red Hat docs, Slack threads, and ICM tickets from SFDC case comments"""
     try:
         username = request.headers.get('X-Username', '')
         tokens_file = os.path.join(os.path.dirname(__file__), 'user_tokens.json')
@@ -2729,6 +2731,7 @@ def get_sfdc_case_related_content(case_number):
         kcs_articles = []
         redhat_docs = []
         slack_threads = []
+        icm_tickets = []
 
         # Also fetch case description to parse for URLs
         case_url = f"{SFDC_API_BASE}/hydra/rest/cases/{case_number}"
@@ -2822,6 +2825,19 @@ def get_sfdc_case_related_content(case_number):
                     })
                     app.logger.info(f"  ✅ Found Slack thread: {channel_id}/p{thread_ts}")
 
+            # ICM tickets (Microsoft ICM portal)
+            icm_pattern = r'https?://portal\.microsofticm\.com/imp/v\d+/incidents/details/(\d+)/summary/?'
+            icm_matches = re.findall(icm_pattern, text)
+            for incident_id in icm_matches:
+                url = f"https://portal.microsofticm.com/imp/v5/incidents/details/{incident_id}/summary"
+                if url not in [t['url'] for t in icm_tickets]:
+                    icm_tickets.append({
+                        'id': incident_id,
+                        'url': url,
+                        'title': f'ICM Incident {incident_id}'
+                    })
+                    app.logger.info(f"  ✅ Found ICM ticket: {incident_id}")
+
         # Resolve Slack channel IDs to channel names
         slack_xoxc = user_tokens_data.get('slack_xoxc', '') if user_tokens_data else ''
         slack_xoxd = user_tokens_data.get('slack_xoxd', '') if user_tokens_data else ''
@@ -2878,12 +2894,13 @@ def get_sfdc_case_related_content(case_number):
                     except Exception as e:
                         app.logger.warning(f"Failed to fetch KCS title for {article_id}: {e}")
 
-        app.logger.info(f"  📊 Related Content for {case_number}: {len(kcs_articles)} KCS, {len(redhat_docs)} Docs, {len(slack_threads)} Slack")
+        app.logger.info(f"  📊 Related Content for {case_number}: {len(kcs_articles)} KCS, {len(redhat_docs)} Docs, {len(slack_threads)} Slack, {len(icm_tickets)} ICM")
 
         return jsonify({
             'kcs_articles': kcs_articles,
             'redhat_docs': redhat_docs,
-            'slack_threads': slack_threads
+            'slack_threads': slack_threads,
+            'icm_tickets': icm_tickets
         })
 
     except Exception as e:
@@ -2894,6 +2911,7 @@ def get_sfdc_case_related_content(case_number):
             'kcs_articles': [],
             'redhat_docs': [],
             'slack_threads': [],
+            'icm_tickets': [],
             'error': str(e)
         }), 500
 
