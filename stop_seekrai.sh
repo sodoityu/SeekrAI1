@@ -22,10 +22,19 @@ fi
 
 if tmux has-session -t seekrai-asksre 2>/dev/null; then
     tmux kill-session -t seekrai-asksre
-    echo "  Stopped ask-sre service (port 8000)"
+    echo "  Stopped ask-sre service"
 else
     echo "  ask-sre service not running"
 fi
+
+# The pgvector database container is left running by default — it may be shared
+# and is slow to re-index. To stop it too, uncomment the lines below (works with
+# either docker or podman, on macOS and Fedora):
+# PGVECTOR_CONTAINER="${PGVECTOR_CONTAINER:-pgvector}"
+# for cli in docker podman; do
+#     command -v "$cli" &>/dev/null && "$cli" stop "$PGVECTOR_CONTAINER" 2>/dev/null \
+#         && { echo "  Stopped pgvector database ($cli)"; break; }
+# done
 
 echo ""
 echo "All services stopped."

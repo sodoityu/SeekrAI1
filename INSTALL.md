@@ -34,7 +34,7 @@ Seekr runs 3 services managed by tmux:
 ### Fedora
 
 ```bash
-sudo dnf install python3 python3-pip tmux git
+sudo dnf install python3 python3-pip tmux git podman
 ```
 
 <details>
@@ -43,6 +43,7 @@ sudo dnf install python3 python3-pip tmux git
 - **python3, python3-pip** — Python runtime and package installer
 - **tmux** — Terminal multiplexer that keeps Seekr's services running in the background. You can attach to any service's session to view logs
 - **git** — Clone the Seekr repository
+- **podman** — Container engine for the `pgvector` PostgreSQL database that ask-sre depends on (see Step 5)
 
 </details>
 
@@ -57,7 +58,7 @@ First install [Homebrew](https://brew.sh) if you don't have it:
 Then install the packages:
 
 ```bash
-brew install python@3.13 tmux git
+brew install python@3.13 tmux git podman
 ```
 
 ---
@@ -120,9 +121,33 @@ Copy the output and paste it as the `SECRET_KEY` value in `.env`. Without a pers
 
 ## Step 5: ask-sre Setup
 
-ask-sre provides AI-powered semantic search across SOP documents and is required for GitHub and GitLab search results.
+ask-sre provides AI-powered semantic search across SOP documents and is required for GitHub and GitLab search results. It depends on a `pgvector` PostgreSQL container.
 
-For full setup instructions, see [SETUP_ASK_SRE.md](SETUP_ASK_SRE.md).
+### Start the pgvector database (Podman)
+
+**Fedora:**
+
+```bash
+podman run -d --name pgvector \
+  -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_USER=postgres \
+  -e POSTGRES_DB=ask_sre_db \
+  -p 5432:5432 \
+  pgvector/pgvector:pg18-trixie
+```
+
+**macOS:** start the Podman VM first, then create the container:
+
+```bash
+podman machine init    # first time only
+podman machine start
+podman run -d --name pgvector \
+  -e POSTGRES_PASSWORD=postgres -e POSTGRES_USER=postgres \
+  -e POSTGRES_DB=ask_sre_db -p 5432:5432 \
+  pgvector/pgvector:pg18-trixie
+```
+
+You only create the container once. On later runs, `start_seekrai.sh` detects it and starts it automatically if it's stopped.
 
 ---
 
