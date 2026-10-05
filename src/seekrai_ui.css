@@ -965,6 +965,17 @@ body {
     color: #0d47a1;
 }
 
+.view-link.lightning {
+    border-color: #2196f3;
+    color: #1976d2;
+}
+
+.view-link.lightning:hover {
+    background: #e3f2fd;
+    border-color: #1976d2;
+    color: #0d47a1;
+}
+
 .view-link.classic {
     border-color: #2196f3;
     color: #1976d2;

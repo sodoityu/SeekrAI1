@@ -153,10 +153,12 @@ def get_sfdc_access_token(config: Dict = None):
     payload = {
         "grant_type": "refresh_token",
         "client_id": "rhsm-api",
-        "refresh_token": redhat_token
+        "refresh_token": redhat_token,
+        "scope": "api.graphql"  # Required for GraphQL API access
     }
 
     try:
+        print(f"🔐 Requesting access token with GraphQL scope...", flush=True)
         response = requests.post(SSO_URL, data=payload, timeout=30)
         response.raise_for_status()
 
@@ -164,14 +166,222 @@ def get_sfdc_access_token(config: Dict = None):
         _access_token = data["access_token"]
         _token_expiry = datetime.now() + timedelta(seconds=data.get("expires_in", 900) - 60)
 
+        print(f"✅ Access token obtained successfully (expires in {data.get('expires_in', 900)}s)", flush=True)
         return _access_token
     except Exception as e:
-        print(f"SFDC token error: {e}")
+        print(f"❌ SFDC token error: {e}", flush=True)
+        if hasattr(e, 'response') and e.response is not None:
+            print(f"❌ Response body: {e.response.text[:500]}", flush=True)
         return None
 
 
+def search_sfdc_graphql(query: str, max_results: int = 20, config: Dict = None) -> Dict:
+    """Search SFDC cases using GraphQL API (finds Lightning-only cases)"""
+    try:
+        token = get_sfdc_access_token(config)
+        if not token:
+            return {"cases": [], "total": 0, "error": "Authentication failed"}
+
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "apollographql-client-name": "seekr-ai",
+            "apollographql-client-version": "1.0.0",
+            "Apollo-Require-Preflight": "true"  # Required to bypass CSRF protection
+        }
+
+        # GraphQL query to search cases
+        graphql_query = """
+        query SearchCases($searchText: String, $first: Int) {
+          redhat_support_uiapi {
+            query {
+              RedHatSupportCase(
+                where: {
+                  or: [
+                    { CaseNumber__c: { like: $searchText } }
+                    { Subject: { like: $searchText } }
+                  ]
+                }
+                first: $first
+                orderBy: { LastModifiedDate: { order: DESC } }
+              ) {
+                totalCount
+                edges {
+                  node {
+                    Id
+                    CaseNumber__c { value }
+                    Subject { value }
+                    Description { value }
+                    Status { value }
+                    Priority { value }
+                    CreatedDate { value }
+                    LastModifiedDate { value }
+                    SBR_Group__c { value }
+                    SBT__c { value }
+                    Owner {
+                      ... on RedHatSupportGroup {
+                        Id
+                        Name { value }
+                      }
+                      ... on RedHatSupportUser {
+                        Id
+                        Name { value }
+                      }
+                    }
+                    Product {
+                      Name { value }
+                    }
+                    RedHatSupportAccount {
+                      Name { value }
+                      AccountNumber { value }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        """
+
+        data = {
+            "query": graphql_query,
+            "variables": {
+                "searchText": f"%{query}%",
+                "first": max_results
+            }
+        }
+
+        try:
+            print(f"📡 Sending GraphQL request for query: {query}", flush=True)
+            graphql_endpoint = "https://graphql.redhat.com"
+            print(f"📡 Endpoint: {graphql_endpoint}", flush=True)
+            print(f"📡 Headers: {list(headers.keys())}", flush=True)
+            response = requests.post(
+                graphql_endpoint,
+                headers=headers,
+                json=data,
+                timeout=30,  # GraphQL queries can take longer
+                verify=True
+            )
+            print(f"📡 GraphQL response status: {response.status_code}", flush=True)
+            print(f"📡 GraphQL response body: {response.text[:500]}", flush=True)
+            response.raise_for_status()
+            result = response.json()
+            print(f"📡 GraphQL response parsed successfully", flush=True)
+        except requests.exceptions.Timeout:
+            print(f"⚠️ GraphQL API timeout (10s) - falling back to REST v2", flush=True)
+            return {"cases": [], "total": 0, "error": "GraphQL timeout"}
+        except requests.exceptions.HTTPError as http_err:
+            status_code = http_err.response.status_code if http_err.response else 'Unknown'
+            error_body = http_err.response.text if http_err.response else 'No response body'
+            print(f"⚠️ GraphQL API HTTP error: {status_code}", flush=True)
+            print(f"⚠️ GraphQL error body: {error_body}", flush=True)
+            # Try to parse error as JSON
+            try:
+                error_json = http_err.response.json() if http_err.response else {}
+                print(f"⚠️ GraphQL error JSON: {error_json}", flush=True)
+            except:
+                pass
+            return {"cases": [], "total": 0, "error": f"GraphQL error ({status_code})"}
+        except Exception as e:
+            print(f"⚠️ GraphQL unexpected error: {str(e)}", flush=True)
+            return {"cases": [], "total": 0, "error": f"GraphQL error: {str(e)}"}
+
+        # Parse GraphQL response
+        cases = []
+        edges = result.get("data", {}).get("redhat_support_uiapi", {}).get("query", {}).get("RedHatSupportCase", {}).get("edges", [])
+        total_count = result.get("data", {}).get("redhat_support_uiapi", {}).get("query", {}).get("RedHatSupportCase", {}).get("totalCount", 0)
+
+        for edge in edges:
+            node = edge.get("node", {})
+            salesforce_id = node.get("Id", "")
+            case_number = node.get("CaseNumber__c", {}).get("value", "N/A")
+            product_obj = node.get("Product", {})
+            product = product_obj.get("Name", {}).get("value", "N/A") if product_obj else "N/A"
+            account_obj = node.get("RedHatSupportAccount", {})
+            account_name = account_obj.get("Name", {}).get("value", "N/A") if account_obj else "N/A"
+            account_number = account_obj.get("AccountNumber", {}).get("value", "N/A") if account_obj else "N/A"
+
+            sbr = node.get("SBR_Group__c", {}).get("value", "N/A") if node.get("SBR_Group__c") else "N/A"
+            sbt = node.get("SBT__c", {}).get("value", "N/A") if node.get("SBT__c") else "N/A"
+
+            # Extract Owner name from polymorphic Owner field (User or Group)
+            owner_obj = node.get("Owner", {})
+            if owner_obj and isinstance(owner_obj, dict):
+                owner_name_obj = owner_obj.get("Name", {})
+                owner = owner_name_obj.get("value", "N/A") if owner_name_obj else "N/A"
+            else:
+                owner = "N/A"
+
+            # Build URLs conditionally based on Product and Account scenarios
+            urls = {}
+
+            # Debug logging for URL decision
+            print(f"  🔍 Case {case_number}: Product='{product}', Account='{account_name}'")
+
+            # Scenario 1: Azure Red Hat OpenShift (ARO) + MS-TEP account
+            # Show all 4 links: CaseView+, Classic, Lightning, Customer Portal
+            if product == "Azure Red Hat OpenShift" and account_name == "MS-TEP":
+                print(f"  ✅ Scenario 1: ARO + MS-TEP → 4 links")
+                urls = {
+                    "caseview_plus": f"https://gss.my.salesforce.com/apex/Support#/cases/{case_number}",
+                    "classic": f"https://gss--c.vf.force.com/apex/Case_View?sbstr={case_number}",
+                    "lightning": f"https://redhatsupport.lightning.force.com/lightning/r/Case/{salesforce_id}/view",
+                    "customer_portal": f"https://access.redhat.com/support/cases/#/case/{case_number}"
+                }
+            # Scenario 2 & 3: All others (ARO non-MS-TEP, ROSA, ROSA HCP, OSD, etc.)
+            # Show only Lightning + Customer Portal
+            else:
+                print(f"  ✅ Scenario 2/3: ARO non-MS-TEP or other products → 2 links (Lightning + Portal)")
+                urls = {
+                    "lightning": f"https://redhatsupport.lightning.force.com/lightning/r/Case/{salesforce_id}/view",
+                    "customer_portal": f"https://access.redhat.com/support/cases/#/case/{case_number}"
+                }
+
+            cases.append({
+                "case_number": case_number,
+                "summary": node.get("Subject", {}).get("value", "No summary"),
+                "description": node.get("Description", {}).get("value", ""),
+                "status": node.get("Status", {}).get("value", "Unknown"),
+                "severity": node.get("Priority", {}).get("value", "N/A"),
+                "product": product,
+                "created_date": node.get("CreatedDate", {}).get("value", ""),
+                "last_modified_date": node.get("LastModifiedDate", {}).get("value", ""),
+                "owner": owner,
+                "account_number": account_number,
+                "account_name": account_name,
+                "sbt": sbt,
+                "sbr": sbr,
+                "urls": urls,
+                "salesforce_id": salesforce_id
+            })
+
+        return {
+            "cases": cases,
+            "total": total_count
+        }
+
+    except Exception as e:
+        print(f"GraphQL search error: {e}")
+        return {"cases": [], "total": 0, "error": str(e)}
+
+
 def search_sfdc(query: str, max_results: int = 20, config: Dict = None) -> Dict:
-    """Search SFDC cases"""
+    """Search SFDC cases - tries GraphQL first, falls back to REST v2"""
+    # Try GraphQL first (finds all cases including Lightning-only new cases)
+    print("🔍 Trying GraphQL search first...", flush=True)
+    graphql_result = search_sfdc_graphql(query, max_results, config)
+
+    print(f"📊 GraphQL result: {len(graphql_result.get('cases', []))} cases, error: {graphql_result.get('error', 'none')}", flush=True)
+
+    # If GraphQL succeeds and returns results, use it
+    if graphql_result.get("cases") and len(graphql_result["cases"]) > 0:
+        print(f"✅ GraphQL found {len(graphql_result['cases'])} cases", flush=True)
+        return graphql_result
+
+    # If GraphQL fails or returns no results, fall back to REST v2
+    print("⚠️ GraphQL returned no results, falling back to REST v2...", flush=True)
+
     try:
         token = get_sfdc_access_token(config)
         if not token:
@@ -187,8 +397,8 @@ def search_sfdc(query: str, max_results: int = 20, config: Dict = None) -> Dict:
             "start": 0,
             "rows": max_results,
             "partnerSearch": False,
-            # Only basic fields are available in search API - detailed fields require /cases/{id} endpoint
-            "expression": "sort=score%20desc&fl=case_createdByName%2Ccase_createdDate%2Ccase_lastModifiedDate%2Cid%2Curi%2Ccase_summary%2Ccase_description%2Ccase_status%2Ccase_product%2Ccase_version%2Ccase_number%2Ccase_severity"
+            # Request account fields for conditional URL logic (ARO/MS-TEP scenarios)
+            "expression": "sort=score%20desc&fl=case_createdByName%2Ccase_createdDate%2Ccase_lastModifiedDate%2Cid%2Curi%2Ccase_summary%2Ccase_description%2Ccase_status%2Ccase_product%2Ccase_version%2Ccase_number%2Ccase_severity%2Ccase_accountName%2Ccase_accountNumber"
         }
 
         # No retries - fail fast when API is down
@@ -230,6 +440,17 @@ def search_sfdc(query: str, max_results: int = 20, config: Dict = None) -> Dict:
         if "response" in result and "docs" in result["response"]:
             for doc in result["response"]["docs"]:
                 case_number = doc.get("case_number", "N/A")
+                case_id = doc.get("id", "")  # Salesforce internal ID for Lightning URL
+                product = doc.get("case_product", "N/A")
+                account_name = doc.get("case_accountName", "N/A")
+
+                # REST API fallback - provide CaseView+ and Classic
+                # Customer Portal is always available, Lightning will be added via lazy load
+                urls = {
+                    "caseview_plus": f"https://gss.my.salesforce.com/apex/Support#/cases/{case_number}",
+                    "classic": f"https://gss--c.vf.force.com/apex/Case_View?sbstr={case_number}",
+                    "customer_portal": f"https://access.redhat.com/support/cases/#/case/{case_number}"
+                }
 
                 cases.append({
                     "case_number": case_number,
@@ -237,20 +458,15 @@ def search_sfdc(query: str, max_results: int = 20, config: Dict = None) -> Dict:
                     "description": doc.get("case_description", ""),
                     "status": doc.get("case_status", "Unknown"),
                     "severity": doc.get("case_severity", "N/A"),
-                    "product": doc.get("case_product", "N/A"),
+                    "product": product,
                     "created_date": doc.get("case_createdDate", ""),
                     "last_modified_date": doc.get("case_lastModifiedDate", ""),
                     "owner": "N/A",
-                    "account_number": "N/A",
-                    "account_name": "N/A",
-                    "internal_status": "N/A",
+                    "account_number": doc.get("case_accountNumber", "N/A"),
+                    "account_name": account_name,
                     "sbt": "N/A",
                     "sbr": "N/A",
-                    "urls": {
-                        "caseview_plus": f"https://gss.my.salesforce.com/apex/Support#/cases/{case_number}",
-                        "classic": f"https://gss--c.vf.force.com/apex/Case_View?sbstr={case_number}",
-                        "customer_portal": f"https://access.redhat.com/support/cases/#/case/{case_number}"
-                    }
+                    "urls": urls
                 })
 
         return {
@@ -617,6 +833,120 @@ def search_kcs(query: str, max_results: int = 20, config: Dict = None) -> Dict:
             "Content-Type": "application/json"
         }
 
+        # Check if query is a Salesforce case number (8 digits)
+        import re
+        case_number_pattern = r'^\d{8}$'
+        if re.match(case_number_pattern, query.strip()):
+            # Query is a case number - fetch KCS articles from case comments
+            case_number = query.strip()
+            print(f"🔍 KCS: Detected case number {case_number}, fetching linked KCS articles from comments")
+
+            try:
+                # Fetch case comments
+                comments_url = f"{SFDC_API_BASE}/hydra/rest/cases/{case_number}/comments"
+                comments_resp = requests.get(comments_url, headers=headers, timeout=15)
+
+                # Fetch case description
+                case_url = f"{SFDC_API_BASE}/hydra/rest/cases/{case_number}"
+                case_resp = requests.get(case_url, headers=headers, timeout=10)
+
+                all_texts = []
+
+                # Parse case description
+                if case_resp.status_code == 200:
+                    case_data = case_resp.json()
+                    description = case_data.get('description', '') or case_data.get('caseDescription', '') or ''
+                    if description:
+                        all_texts.append(description)
+
+                # Parse comments
+                if comments_resp.status_code == 200:
+                    comments_data = comments_resp.json()
+                    if isinstance(comments_data, list):
+                        comments = comments_data
+                    elif isinstance(comments_data, dict):
+                        comments = comments_data.get('comments', comments_data.get('body', []))
+                        if not isinstance(comments, list):
+                            comments = [comments_data]
+                    else:
+                        comments = []
+
+                    for comment in comments:
+                        if isinstance(comment, str):
+                            comment_text = comment
+                        elif isinstance(comment, dict):
+                            comment_text = comment.get('text', comment.get('body', comment.get('commentBody', comment.get('caseComment', ''))))
+                        else:
+                            continue
+                        if comment_text:
+                            all_texts.append(comment_text)
+
+                # Extract KCS article IDs from all texts
+                kcs_article_ids = []
+                kcs_pattern = r'https?://access\.redhat\.com/(?:solutions|articles)/(\d+)'
+                for text in all_texts:
+                    matches = re.findall(kcs_pattern, text)
+                    for article_id in matches:
+                        if article_id not in kcs_article_ids:
+                            kcs_article_ids.append(article_id)
+
+                if not kcs_article_ids:
+                    print(f"  ℹ️ No KCS articles found in case {case_number} comments")
+                    return {"articles": [], "total": 0}
+
+                print(f"  ✅ Found {len(kcs_article_ids)} KCS articles in case comments: {kcs_article_ids}")
+
+                # Fetch full details for each KCS article
+                articles = []
+                for article_id in kcs_article_ids[:max_results]:
+                    try:
+                        # Search for this specific article to get full details
+                        data = {
+                            "q": article_id,
+                            "rows": 1,
+                            "expression": "sort=score%20DESC&fq=documentKind%3A(%22Article%22%20OR%20%22Solution%22)%20AND%20accessState%3A(%22active%22%20OR%20%22private%22)&fl=allTitle%2CcaseCount%2CdocumentKind%2Cid%2Cscore%2Curi%2Cresource_uri%2Cview_uri%2Cenvironment%2Cissue%2Cresolution%2CverificationState%2CpublishState%2CmodifiedDate&showRetired=false",
+                            "start": 0,
+                            "clientName": "unified-search"
+                        }
+                        resp = requests.post(
+                            f"{SFDC_API_BASE}/hydra/rest/search/v2/kcs",
+                            headers=headers,
+                            json=data,
+                            timeout=10
+                        )
+                        if resp.status_code == 200:
+                            r = resp.json()
+                            docs = r.get("response", {}).get("docs", [])
+                            # Find the exact article by ID
+                            for doc in docs:
+                                if doc.get("id") == article_id:
+                                    article = {
+                                        "id": doc.get("id", "N/A"),
+                                        "title": doc.get("allTitle", "No title"),
+                                        "document_kind": doc.get("documentKind", "Article"),
+                                        "score": doc.get("score", 0),
+                                        "view_uri": doc.get("view_uri", ""),
+                                        "url": doc.get("view_uri", f"https://access.redhat.com/solutions/{article_id}"),
+                                        "environment": doc.get("environment", ""),
+                                        "issue": doc.get("issue", ""),
+                                        "resolution": doc.get("resolution", ""),
+                                        "verification_state": doc.get("verificationState", doc.get("publishState", "N/A")),
+                                        "publish_state": doc.get("publishState", "N/A"),
+                                        "modified_date": doc.get("modifiedDate", "N/A")
+                                    }
+                                    articles.append(article)
+                                    break
+                    except Exception as e:
+                        print(f"  ⚠️ Failed to fetch details for KCS {article_id}: {e}")
+
+                return {"articles": articles, "total": len(articles)}
+
+            except Exception as e:
+                print(f"  ❌ Failed to fetch case comments for {case_number}: {e}")
+                # Fall back to empty results for case number queries
+                return {"articles": [], "total": 0}
+
+        # Not a case number - do normal KCS search
         KCS_EXPRESSION = "sort=score%20DESC&fq=documentKind%3A(%22Article%22%20OR%20%22Solution%22)%20AND%20accessState%3A(%22active%22%20OR%20%22private%22)&fl=allTitle%2CcaseCount%2CdocumentKind%2Cid%2Cscore%2Curi%2Cresource_uri%2Cview_uri%2Cenvironment%2Cissue%2Cresolution%2CverificationState%2CpublishState%2CmodifiedDate&showRetired=false"
 
         def _kcs_api_call(q, rows):
@@ -2091,13 +2421,157 @@ def search():
             config = get_config()
 
         # Debug: Check what tokens are in config
-        print(f"🔑 Config tokens: GitHub={'SET' if config.get('github_token') else 'NOT SET'}, "
+        print(f"🔑 Config tokens: RedHat={'SET' if config.get('redhat_token') else 'NOT SET'}, "
+              f"GitHub={'SET' if config.get('github_token') else 'NOT SET'}, "
               f"GitLab={'SET' if config.get('gitlab_token') else 'NOT SET'}, "
               f"Slack XOXC={'SET' if config.get('slack_xoxc') else 'NOT SET'}, "
               f"Slack XOXD={'SET' if config.get('slack_xoxd') else 'NOT SET'}")
 
         # Search all sources
         results = search_all(query, max_results, slack_channels, config, jira_created_after, jira_created_before, custom_jql, jira_search_logic)
+
+        # Only fetch linked JIRA tickets if searching for a specific case number
+        # For keyword searches, let JIRA and SFDC search independently to avoid overwhelming the server
+        is_case_number = re.match(r'^\d{8}$', query.strip())
+
+        sfdc_cases = results.get('sfdc', {}).get('cases', [])
+        if sfdc_cases:
+            if not is_case_number:
+                print(f"ℹ️ Skipping linked JIRA ticket fetch for keyword search (found {len(sfdc_cases)} SFDC cases)")
+
+        if sfdc_cases and is_case_number:
+            try:
+                # Limit to top 10 cases to avoid overwhelming the server
+                max_cases_to_process = 10
+                cases_to_process = sfdc_cases[:max_cases_to_process]
+                print(f"🔗 Fetching linked JIRA tickets for {len(cases_to_process)} SFDC cases (out of {len(sfdc_cases)} total)")
+
+                # Get Jira credentials
+                username = request.headers.get('X-Username', '')
+                tokens_file = os.path.join(os.path.dirname(__file__), 'user_tokens.json')
+                atlassian_email = ''
+                atlassian_token = ''
+
+                if username and os.path.exists(tokens_file):
+                    with open(tokens_file, 'r') as f:
+                        all_tokens = json.load(f)
+                        user_tokens = all_tokens.get(username, {})
+                        atlassian_email = user_tokens.get('atlassian_email', '')
+                        atlassian_token = user_tokens.get('atlassian_token', '')
+
+                if atlassian_email and atlassian_token:
+                    print(f"  ✅ Jira credentials found for user {username}")
+                    linked_jira_keys = set()
+
+                    # Step 1: Collect all linked JIRA ticket keys from SFDC cases (using GraphQL + Red Hat token)
+                    for case in cases_to_process:
+                        case_number = case.get('case_number', '')
+                        if case_number:
+                            print(f"  🔍 Processing case {case_number} for linked JIRA tickets")
+                            try:
+                                # Use the existing get_case_escalations function
+                                with app.test_request_context(headers={'X-Username': username}):
+                                    escalations_data = get_case_escalations(case_number)
+                                    escalations = escalations_data.get_json()
+
+                                    external_trackers = escalations.get('external_trackers', [])
+                                    print(f"    📊 Found {len(external_trackers)} external trackers for case {case_number}")
+
+                                    for tracker in external_trackers:
+                                        # Note: get_case_escalations() returns camelCase field names
+                                        jira_key = tracker.get('resourceKey', '')
+                                        if jira_key:
+                                            linked_jira_keys.add(jira_key)
+                                            print(f"    ✓ Extracted JIRA key: {jira_key}")
+                            except Exception as e:
+                                print(f"  ⚠️ Failed to fetch escalations for case {case_number}: {e}")
+
+                    # Step 2: Fetch full JIRA ticket details (using Atlassian API + Atlassian token)
+                    if linked_jira_keys:
+                        print(f"  📋 Found {len(linked_jira_keys)} linked JIRA tickets: {linked_jira_keys}")
+
+                        jira_issues = results.get('jira', {}).get('issues', [])
+                        existing_keys = set(issue.get('key', '') for issue in jira_issues)
+
+                        for jira_key in linked_jira_keys:
+                            if jira_key not in existing_keys:
+                                try:
+                                    # Fetch full JIRA ticket details via Atlassian API
+                                    jira_api_url = f"https://redhat.atlassian.net/rest/api/3/issue/{jira_key}"
+                                    jira_resp = requests.get(
+                                        jira_api_url,
+                                        auth=(atlassian_email, atlassian_token),
+                                        headers={'Accept': 'application/json'},
+                                        timeout=10
+                                    )
+
+                                    if jira_resp.status_code == 200:
+                                        issue_data = jira_resp.json()
+                                        fields = issue_data.get('fields', {})
+
+                                        # Parse all fields same as regular JIRA search
+                                        issuetype = fields.get('issuetype', {})
+                                        work_type = issuetype.get('name', 'N/A') if issuetype else 'N/A'
+
+                                        product_list = fields.get('customfield_10868', [])
+                                        product = ', '.join([p.get('value', '') for p in product_list]) if product_list else 'N/A'
+
+                                        priority = fields.get('priority', {})
+                                        priority_name = priority.get('name', 'N/A') if priority else 'N/A'
+
+                                        assignee = fields.get('assignee', {})
+                                        assignee_name = assignee.get('displayName', 'Unassigned') if assignee else 'Unassigned'
+
+                                        reporter = fields.get('reporter', {})
+                                        reporter_name = reporter.get('displayName', 'N/A') if reporter else 'N/A'
+
+                                        security_level = fields.get('security', {})
+                                        security_level_name = security_level.get('name', 'None') if security_level else 'None'
+
+                                        components = fields.get('components', [])
+                                        components_str = ', '.join([c.get('name', '') for c in components]) if components else 'None'
+
+                                        project = fields.get('project', {})
+                                        project_name = project.get('name', 'N/A') if project else 'N/A'
+
+                                        description = fields.get('description', '')
+                                        if isinstance(description, dict):
+                                            description = extract_text_from_adf(description)
+
+                                        jira_issues.append({
+                                            'key': jira_key,
+                                            'summary': fields.get('summary', 'No title'),
+                                            'status': fields.get('status', {}).get('name', 'Unknown'),
+                                            'work_type': work_type,
+                                            'type': work_type,
+                                            'product': product,
+                                            'priority': priority_name,
+                                            'assignee': assignee_name,
+                                            'reporter': reporter_name,
+                                            'security_level': security_level_name,
+                                            'components': components_str,
+                                            'project': project_name,
+                                            'description': description,
+                                            'url': f"https://issues.redhat.com/browse/{jira_key}",
+                                            'linked_from_sfdc': True  # Mark as linked from SFDC
+                                        })
+                                        print(f"  ✅ Added linked JIRA ticket: {jira_key}")
+                                    else:
+                                        print(f"  ⚠️ Failed to fetch JIRA ticket {jira_key}: HTTP {jira_resp.status_code}")
+                                except Exception as e:
+                                    print(f"  ⚠️ Failed to fetch JIRA ticket {jira_key}: {e}")
+
+                        # Update results with merged JIRA tickets
+                        results['jira']['issues'] = jira_issues
+                        results['jira']['total'] = len(jira_issues)
+                    else:
+                        print(f"  ℹ️ No linked JIRA tickets found for SFDC cases")
+                else:
+                    print(f"  ⚠️ No Jira credentials found (username: {username}, email: {'SET' if atlassian_email else 'NOT SET'}, token: {'SET' if atlassian_token else 'NOT SET'})")
+            except Exception as e:
+                print(f"  ❌ Error fetching linked JIRA tickets: {e}")
+                import traceback
+                traceback.print_exc()
 
         print(f"✅ Search completed: Jira={results.get('jira', {}).get('total', 0)}, "
               f"SFDC={results.get('sfdc', {}).get('total', 0)}, "
@@ -2586,6 +3060,197 @@ def get_jira_issue_links(jira_key):
 
         jira_linked_cases = []
 
+        # Fetch Remote Links from JIRA (this is where Salesforce cases are linked in the Activity tab)
+        remotelinks_url = f"https://redhat.atlassian.net/rest/api/3/issue/{jira_key}/remotelink"
+        try:
+            remotelinks_resp = requests.get(
+                remotelinks_url,
+                headers=headers_jira,
+                auth=(atlassian_email, atlassian_token),
+                timeout=10
+            )
+            if remotelinks_resp.status_code == 200:
+                remote_links = remotelinks_resp.json()
+                app.logger.info(f"📋 Found {len(remote_links)} remote links for {jira_key}")
+
+                # Parse remote links looking for Salesforce cases
+                for remote_link in remote_links:
+                    link_obj = remote_link.get('object', {})
+                    link_url = link_obj.get('url', '')
+                    link_title = link_obj.get('title', '')
+
+                    app.logger.info(f"  🔗 Remote link: {link_title} → {link_url}")
+
+                    # Check if this is a Salesforce case link
+                    if 'salesforce' in link_url.lower() or 'force.com' in link_url.lower():
+                        # Try to extract case number from URL or title
+                        import re
+                        case_match = re.search(r'\b(0[34]\d{6})\b', link_title + ' ' + link_url)
+                        if case_match:
+                            case_number = case_match.group(1)
+
+                            # Check if URL is already a Lightning URL
+                            if 'lightning.force.com' in link_url and '/Case/' in link_url:
+                                salesforce_id = link_url.split('/Case/')[1].split('/')[0]
+                            else:
+                                salesforce_id = ''
+
+                            jira_linked_cases.append({
+                                'case_number': case_number,
+                                'salesforce_id': salesforce_id,
+                                'summary': link_title,
+                                'problem_statement': link_title,
+                                'status': 'Unknown',
+                                'url': f"https://access.redhat.com/support/cases/#/case/{case_number}",
+                                'urls': {
+                                    'customer_portal': f"https://access.redhat.com/support/cases/#/case/{case_number}"
+                                },
+                                'source': 'jira_remotelink'
+                            })
+                            app.logger.info(f"  ✅ Found SFDC case from remote link: {case_number}")
+            else:
+                app.logger.warning(f"⚠️ Failed to fetch remote links: {remotelinks_resp.status_code}")
+        except Exception as e:
+            app.logger.error(f"❌ Error fetching remote links: {e}")
+
+        # Query Salesforce GraphQL for cases that have external links to this Jira ticket
+        app.logger.info(f"🔍 Querying Salesforce for cases linked to {jira_key}")
+        redhat_token = config.get('redhat_token', '')
+
+        if redhat_token:
+            try:
+                access_token = get_sfdc_access_token(config)
+                if access_token:
+                    # Query for external links that point to this Jira ticket
+                    # The JIRA key is stored in ExternalURL__c (e.g., https://redhat.atlassian.net/browse/OHSS-58849)
+                    jira_url = f"https://redhat.atlassian.net/browse/{jira_key}"
+                    graphql_query = """
+                    query GetCasesForJira($jiraUrl: String!) {
+                      redhat_support_uiapi {
+                        query {
+                          RedHatSupportExternalLink__c(
+                            where: {
+                              ExternalURL__c: { eq: $jiraUrl }
+                            }
+                            first: 10
+                          ) {
+                            edges {
+                              node {
+                                Id
+                                Case__c
+                                ExternalId { value }
+                                ExternalLinkName { value }
+                                ExternalURL { value }
+                                ExternalType { value }
+                                Status { value }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                    """
+
+                    graphql_resp = requests.post(
+                        "https://graphql.redhat.com",
+                        headers={
+                            "Authorization": f"Bearer {access_token}",
+                            "Content-Type": "application/json",
+                            "apollographql-client-name": "seekr-ai",
+                            "apollographql-client-version": "1.0.0",
+                            "Apollo-Require-Preflight": "true"
+                        },
+                        json={
+                            "query": graphql_query,
+                            "variables": {"jiraUrl": jira_url}
+                        },
+                        timeout=30
+                    )
+
+                    if graphql_resp.status_code == 200:
+                        graphql_result = graphql_resp.json()
+                        link_edges = graphql_result.get("data", {}).get("redhat_support_uiapi", {}).get("query", {}).get("RedHatSupportExternalLink__c", {}).get("edges", [])
+
+                        app.logger.info(f"  📋 Found {len(link_edges)} SFDC cases with external links to {jira_key}")
+
+                        for link_edge in link_edges:
+                            link_node = link_edge.get("node", {})
+                            case_id = link_node.get("Case__c", "")
+
+                            if case_id:
+                                # Now query for the case details to get case number and create Lightning URL
+                                case_query = """
+                                query GetCaseDetails($caseId: ID!) {
+                                  redhat_support_uiapi {
+                                    query {
+                                      RedHatSupportCase(where: { Id: { eq: $caseId } }, first: 1) {
+                                        edges {
+                                          node {
+                                            Id
+                                            CaseNumber__c { value }
+                                            Subject { value }
+                                            Status { value }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                                """
+
+                                case_resp = requests.post(
+                                    "https://graphql.redhat.com",
+                                    headers={
+                                        "Authorization": f"Bearer {access_token}",
+                                        "Content-Type": "application/json",
+                                        "apollographql-client-name": "seekr-ai",
+                                        "apollographql-client-version": "1.0.0",
+                                        "Apollo-Require-Preflight": "true"
+                                    },
+                                    json={
+                                        "query": case_query,
+                                        "variables": {"caseId": case_id}
+                                    },
+                                    timeout=10
+                                )
+
+                                if case_resp.status_code == 200:
+                                    case_result = case_resp.json()
+                                    case_edges = case_result.get("data", {}).get("redhat_support_uiapi", {}).get("query", {}).get("RedHatSupportCase", {}).get("edges", [])
+
+                                    if case_edges:
+                                        case_node = case_edges[0].get("node", {})
+                                        case_number = case_node.get("CaseNumber__c", {}).get("value", "")
+                                        salesforce_id = case_node.get("Id", "")
+                                        summary = case_node.get("Subject", {}).get("value", "")
+                                        status = case_node.get("Status", {}).get("value", "")
+
+                                        if case_number:
+                                            jira_linked_cases.append({
+                                                'case_number': case_number,
+                                                'salesforce_id': salesforce_id,
+                                                'problem_statement': summary,
+                                                'summary': summary,
+                                                'status': status,
+                                                'url': f"https://access.redhat.com/support/cases/#/case/{case_number}",
+                                                'urls': {
+                                                    'lightning': f"https://redhatsupport.lightning.force.com/lightning/r/Case/{salesforce_id}/view",
+                                                    'customer_portal': f"https://access.redhat.com/support/cases/#/case/{case_number}"
+                                                },
+                                                'source': 'sfdc_graphql_external_link'
+                                            })
+                                            app.logger.info(f"  ✅ Found SFDC case {case_number} linked to {jira_key} with Lightning URL")
+                    else:
+                        try:
+                            error_body = graphql_resp.json()
+                            app.logger.error(f"⚠️ SFDC GraphQL query failed: {graphql_resp.status_code}, Error: {error_body}")
+                        except:
+                            app.logger.error(f"⚠️ SFDC GraphQL query failed: {graphql_resp.status_code}, Response: {graphql_resp.text[:500]}")
+            except Exception as e:
+                app.logger.error(f"❌ Error querying SFDC for linked cases: {e}")
+                import traceback
+                app.logger.debug(f"Traceback: {traceback.format_exc()}")
+
         # Check if OHSS ticket has linked cases in a custom field
         if issue_resp.status_code == 200:
             ohss_data = issue_resp.json()
@@ -2597,9 +3262,43 @@ def get_jira_issue_links(jira_key):
 
             import re
 
-            # Search for custom fields containing linked cases (no debug logging for speed)
+            # Search for custom fields containing linked cases
+            app.logger.info(f"📋 Total custom fields in OHSS ticket: {len([k for k in ohss_fields.keys() if k.startswith('customfield_')])}")
+
+            # Get field metadata to see display names
+            try:
+                fields_meta_url = f"https://redhat.atlassian.net/rest/api/3/field"
+                fields_meta_resp = requests.get(
+                    fields_meta_url,
+                    headers=headers_jira,
+                    auth=(atlassian_email, atlassian_token),
+                    timeout=10
+                )
+                if fields_meta_resp.status_code == 200:
+                    all_fields_meta = fields_meta_resp.json()
+                    # Create a mapping of field ID to field name
+                    field_id_to_name = {f['id']: f.get('name', f['id']) for f in all_fields_meta if 'id' in f}
+
+                    # Log custom fields with their display names
+                    app.logger.info("📋 Custom fields with display names (non-null only):")
+                    for field_id in sorted([k for k in ohss_fields.keys() if k.startswith('customfield_')]):
+                        field_value = ohss_fields.get(field_id)
+                        display_name = field_id_to_name.get(field_id, field_id)
+                        if field_value:
+                            if isinstance(field_value, list) and len(field_value) > 0:
+                                app.logger.info(f"  {field_id} ({display_name}): {json.dumps(field_value, indent=2)[:500]}")
+                            elif isinstance(field_value, dict):
+                                app.logger.info(f"  {field_id} ({display_name}): {json.dumps(field_value, indent=2)[:300]}")
+            except Exception as e:
+                app.logger.error(f"❌ Failed to fetch field metadata: {e}")
+
+            # Dump ALL custom fields to find where Lightning URL is stored
             for field_name, field_value in ohss_fields.items():
                 if field_name.startswith('customfield_') and field_value:
+                    # Check if this field contains "lightning" or case number anywhere
+                    field_str = json.dumps(field_value).lower()
+                    if 'lightning' in field_str or '04529104' in field_str or '500nr' in field_str:
+                        app.logger.info(f"  🎯 FOUND POTENTIAL FIELD {field_name}: {json.dumps(field_value, indent=2)[:2000]}")
                     # Check if it's a list of linked cases
                     if isinstance(field_value, list) and len(field_value) > 0:
                         first_item = field_value[0]
@@ -2611,23 +3310,44 @@ def get_jira_issue_links(jira_key):
                             # Extract case information from this field
                             for case_item in field_value:
                                 if isinstance(case_item, dict):
-                                    case_number = case_item.get('caseNumber') or case_item.get('case_number') or case_item.get('id', '')
+                                    app.logger.info(f"  🔍 case_item fields: {list(case_item.keys())}")
+                                    app.logger.info(f"  🔍 Full case_item: {case_item}")
+
+                                    case_number = case_item.get('caseNumber') or case_item.get('case_number', '')
+                                    salesforce_id = case_item.get('id', '')
                                     status = case_item.get('status', 'Unknown')
                                     summary = case_item.get('summary', f'Case {case_number}')
 
+                                    # Check for existing URL fields (try multiple possible field names)
+                                    sfdc_link = case_item.get('url') or case_item.get('link') or case_item.get('sfdcLink') or case_item.get('caseUrl') or case_item.get('lightningUrl') or ''
+                                    app.logger.info(f"  🔍 Extracted sfdc_link: {sfdc_link}")
+
                                     # Validate case number format
                                     if re.match(r'^0[34]\d{6}$', str(case_number)):
+                                        case_urls = {
+                                            'customer_portal': f"https://access.redhat.com/support/cases/#/case/{case_number}"
+                                        }
+
+                                        # Use the Lightning URL from Jira if available
+                                        if sfdc_link and 'lightning.force.com' in sfdc_link:
+                                            case_urls['lightning'] = sfdc_link
+                                            # Extract salesforce_id from URL if not already set
+                                            if not salesforce_id and '/Case/' in sfdc_link:
+                                                salesforce_id = sfdc_link.split('/Case/')[1].split('/')[0]
+                                            app.logger.info(f"  ✅ Using Lightning URL from Jira: {sfdc_link}")
+                                        elif salesforce_id:
+                                            # Create Lightning URL from salesforce_id
+                                            case_urls['lightning'] = f"https://redhatsupport.lightning.force.com/lightning/r/Case/{salesforce_id}/view"
+                                            app.logger.info(f"  ✅ Created Lightning URL with salesforce_id: {salesforce_id}")
+
                                         jira_linked_cases.append({
                                             'case_number': case_number,
-                                            'salesforce_id': '',
+                                            'salesforce_id': salesforce_id,
                                             'problem_statement': summary,
                                             'summary': summary,
                                             'status': status,
                                             'url': f"https://access.redhat.com/support/cases/#/case/{case_number}",
-                                            'urls': {
-                                                'classic': f"https://gss--c.vf.force.com/apex/Case_View?sbstr={case_number}",
-                                                'customer_portal': f"https://access.redhat.com/support/cases/#/case/{case_number}"
-                                            },
+                                            'urls': case_urls,
                                             'source': 'ohss_linked_cases_field'
                                         })
                                         app.logger.info(f"  ✅ Found SFDC case from OHSS field: {case_number} - {summary} ({status})")
@@ -2638,38 +3358,8 @@ def get_jira_issue_links(jira_key):
             issue_links = issue_data.get('fields', {}).get('issuelinks', [])
             app.logger.info(f"📋 Found {len(issue_links)} issue links in Jira")
 
-            # Process each issue link
-            for link in issue_links:
-                # Issue links have either 'inwardIssue' or 'outwardIssue'
-                linked_issue = link.get('inwardIssue') or link.get('outwardIssue')
-
-                if linked_issue:
-                    linked_key = linked_issue.get('key', '')
-                    linked_fields = linked_issue.get('fields', {})
-                    linked_summary = linked_fields.get('summary', '')
-                    linked_status = linked_fields.get('status', {}).get('name', 'Unknown')
-
-                    app.logger.info(f"  🔍 Linked issue: {linked_key}, Summary: {linked_summary}, Status: {linked_status}")
-
-                    import re
-                    case_match = re.search(r'\b(0[34]\d{6})\b', f"{linked_key} {linked_summary}")
-
-                    if case_match:
-                        case_number = case_match.group(1)
-                        jira_linked_cases.append({
-                            'case_number': case_number,
-                            'salesforce_id': '',
-                            'problem_statement': linked_summary or f'Case {case_number}',
-                            'summary': linked_summary or f'Case {case_number}',
-                            'status': linked_status,
-                            'url': f"https://access.redhat.com/support/cases/#/case/{case_number}",
-                            'urls': {
-                                'classic': f"https://gss--c.vf.force.com/apex/Case_View?sbstr={case_number}",
-                                'customer_portal': f"https://access.redhat.com/support/cases/#/case/{case_number}"
-                            },
-                            'source': 'jira_issuelink'
-                        })
-                        app.logger.info(f"  ✅ Found SFDC case from Jira issue link: {case_number} - {linked_summary}")
+            # Note: We do NOT extract SFDC cases from linked Jira tickets
+            # Only fetch from "Linked Cases" custom field or Salesforce GraphQL reverse query
         else:
             app.logger.warning(f"⚠️ Failed to fetch Jira issue: {issue_resp.status_code}")
 
@@ -2724,7 +3414,8 @@ def get_jira_issue_links(jira_key):
 
         import re
 
-        # First, extract case numbers from description and comments
+        # Fallback: Extract case numbers from description and comments
+        # This helps find cases that are mentioned in JIRA text but not formally linked
         all_text = issue_description + '\n'
         for comment in comments:
             body = comment.get('body', {})
@@ -2740,17 +3431,16 @@ def get_jira_issue_links(jira_key):
                 jira_linked_cases.append({
                     'case_number': case_num,
                     'salesforce_id': '',
-                    'problem_statement': f'Case {case_num} (mentioned in ticket)',
+                    'problem_statement': f'Case {case_num}',
                     'summary': f'Case {case_num}',
                     'status': 'Unknown',
                     'url': f"https://access.redhat.com/support/cases/#/case/{case_num}",
                     'urls': {
-                        'classic': f"https://gss--c.vf.force.com/apex/Case_View?sbstr={case_num}",
                         'customer_portal': f"https://access.redhat.com/support/cases/#/case/{case_num}"
                     },
                     'source': 'jira_text'
                 })
-                app.logger.info(f"  ✅ Found SFDC case number in text: {case_num}")
+                app.logger.info(f"  ✅ Found SFDC case number in JIRA text: {case_num}")
 
         for comment in comments:
             # Extract text from ADF format
@@ -2825,6 +3515,7 @@ def get_jira_issue_links(jira_key):
         # Get channel names for Related Content
         slack_xoxc = config.get('slack_xoxc', '')
         slack_xoxd = config.get('slack_xoxd', '')
+        app.logger.info(f"  🔍 Slack credentials available: xoxc={'✅' if slack_xoxc else '❌'}, xoxd={'✅' if slack_xoxd else '❌'}, threads={len(slack_threads)}")
         if slack_xoxc and slack_xoxd and slack_threads:
             unique_channel_ids = set(t['channel_id'] for t in slack_threads)
             channel_name_map = {}
@@ -2884,104 +3575,136 @@ def get_jira_issue_links(jira_key):
         if redhat_token:
             app.logger.info(f"🔑 Red Hat token (first 20 chars): {redhat_token[:20]}...")
 
-        # Optional: Enrich linked cases with full details from SFDC API if we have Red Hat token
-        # This adds problem_statement and accurate status, but isn't required
+        # Enrich all linked cases with Lightning URLs by querying Salesforce GraphQL
+        app.logger.info(f"📋 Enriching {len(linked_cases)} cases with Lightning URLs from Salesforce GraphQL")
         if redhat_token and len(linked_cases) > 0:
-            start_time = time.time()
-            app.logger.info(f"🔍 Attempting to enrich {len(linked_cases)} SFDC cases with Red Hat API")
+            try:
+                access_token = get_sfdc_access_token(config)
+                if access_token:
+                    for case_dict in linked_cases:
+                        case_number = case_dict.get('case_number', '')
+                        if not case_number:
+                            continue
 
-            # Exchange offline token for access token
-            access_token = get_sfdc_access_token(config)
-            token_time = time.time() - start_time
-            app.logger.info(f"⏱️ Token exchange took {token_time:.2f}s")
+                        # Query Salesforce GraphQL for this case to get salesforce_id, summary, and status
+                        case_query = """
+                        query GetCaseDetails($caseNumber: String!) {
+                          redhat_support_uiapi {
+                            query {
+                              RedHatSupportCase(where: { CaseNumber__c: { eq: $caseNumber } }, first: 1) {
+                                edges {
+                                  node {
+                                    Id
+                                    Subject { value }
+                                    Status { value }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                        """
 
-            if not access_token:
-                app.logger.warning(f"⚠️ Failed to get SFDC access token from offline token")
-            else:
-                app.logger.info(f"✅ Successfully obtained SFDC access token")
+                        try:
+                            case_resp = requests.post(
+                                "https://graphql.redhat.com",
+                                headers={
+                                    "Authorization": f"Bearer {access_token}",
+                                    "Content-Type": "application/json",
+                                    "apollographql-client-name": "seekr-ai",
+                                    "apollographql-client-version": "1.0.0",
+                                    "Apollo-Require-Preflight": "true"
+                                },
+                                json={
+                                    "query": case_query,
+                                    "variables": {"caseNumber": case_number}
+                                },
+                                timeout=10
+                            )
 
-            for sfdc_case in linked_cases:
-                if not access_token:
-                    break
+                            if case_resp.status_code == 200:
+                                case_result = case_resp.json()
+                                case_edges = case_result.get("data", {}).get("redhat_support_uiapi", {}).get("query", {}).get("RedHatSupportCase", {}).get("edges", [])
 
-                try:
-                    case_number = sfdc_case['case_number']
-                    # Fetch full case details from SFDC API
-                    case_start = time.time()
-                    case_api_url = f"https://access.redhat.com/hydra/rest/cases/{case_number}"
-                    headers_sfdc = {
-                        'Authorization': f'Bearer {access_token}',  # Use access token, not offline token
-                        'Accept': 'application/json'
-                    }
-                    resp = requests.get(case_api_url, headers=headers_sfdc, timeout=10)
-                    case_fetch_time = time.time() - case_start
-                    app.logger.info(f"⏱️ Case {case_number} fetch took {case_fetch_time:.2f}s")
-                    if resp.status_code == 200:
-                        case_data = resp.json()
-                        # Override with full details from SFDC API
-                        sfdc_case['problem_statement'] = case_data.get('summaryEnglish', case_data.get('summary', sfdc_case.get('problem_statement', 'No problem statement')))
-                        sfdc_case['status'] = case_data.get('status', sfdc_case.get('status', 'Unknown'))
-                        sfdc_case['salesforce_id'] = case_data.get('id', sfdc_case.get('salesforce_id', ''))
-                        sfdc_case['urls']['classic'] = f"https://gss--c.vf.force.com/apex/Case_View?sbstr={case_number}"
-                        app.logger.info(f"  ✅ Enriched case {case_number} with full SFDC details")
-                    else:
-                        error_text = resp.text[:500] if resp.text else 'No error message'
-                        app.logger.warning(f"  ⚠️ Failed to enrich case {case_number}: HTTP {resp.status_code}")
-                        app.logger.warning(f"  ⚠️ Error response: {error_text}")
-                except Exception as e:
-                    app.logger.warning(f"  ⚠️ Failed to enrich SFDC case {sfdc_case.get('case_number')}: {e}")
-        else:
-            if len(linked_cases) > 0:
-                app.logger.info(f"📋 Using basic info from Jira remote links (no Red Hat token for enrichment)")
+                                if case_edges:
+                                    case_node = case_edges[0].get("node", {})
+                                    salesforce_id = case_node.get("Id", "")
+                                    subject = case_node.get("Subject", {}).get("value", "")
+                                    status = case_node.get("Status", {}).get("value", "")
+
+                                    if salesforce_id:
+                                        case_dict['salesforce_id'] = salesforce_id
+                                        if subject:
+                                            case_dict['summary'] = subject
+                                            case_dict['problem_statement'] = subject
+                                        if status:
+                                            case_dict['status'] = status
+                                        if 'urls' not in case_dict:
+                                            case_dict['urls'] = {}
+                                        case_dict['urls']['lightning'] = f"https://redhatsupport.lightning.force.com/lightning/r/Case/{salesforce_id}/view"
+                                        app.logger.info(f"  ✅ Enriched case {case_number}: {subject} ({status})")
+                        except Exception as e:
+                            app.logger.warning(f"  ⚠️ Failed to enrich case {case_number}: {e}")
+                            continue
+            except Exception as e:
+                app.logger.error(f"❌ Failed to enrich cases with Lightning URLs: {e}")
 
         # Fallback: Search SFDC if no remote links found
         if redhat_token and len(linked_cases) == 0:
             try:
-                # Search for Salesforce cases that contain this Jira key
-                sfdc_search_url = "https://access.redhat.com/hydra/rest/search/v2/cases"
-                headers_sfdc = {
-                    'Authorization': f'Bearer {redhat_token}',
-                    'Accept': 'application/json',
-                    'Content-Type': 'application/json'
-                }
-
-                # Search for the Jira key in case descriptions and comments
-                search_payload = {
-                    'q': jira_key,
-                    'start': 0,
-                    'rows': 20
-                }
-
-                app.logger.info(f"🔍 Searching SFDC for cases linked to {jira_key}")
-                sfdc_resp = requests.post(sfdc_search_url, headers=headers_sfdc, json=search_payload, timeout=30)
-                app.logger.info(f"📊 SFDC search response: status={sfdc_resp.status_code}")
-
-                if sfdc_resp.status_code == 200:
-                    sfdc_data = sfdc_resp.json()
-                    docs = sfdc_data.get('response', {}).get('docs', [])
-                    total_found = sfdc_data.get('response', {}).get('numFound', 0)
-                    app.logger.info(f"📋 SFDC search found {total_found} cases mentioning {jira_key}")
-
-                    for doc in docs:
-                        case_number = doc.get('case_number', 'Unknown')
-                        salesforce_id = doc.get('id', '')
-
-                        linked_cases.append({
-                            'case_number': case_number,
-                            'salesforce_id': salesforce_id,
-                            'summary': doc.get('subject', 'No summary'),
-                            'problem_statement': doc.get('case_summaryEnglish', doc.get('case_summary', 'No problem statement')),
-                            'status': doc.get('case_status', 'Unknown'),
-                            'urls': {
-                                'classic': f"https://gss--c.vf.force.com/apex/Case_View?sbstr={case_number}",
-                                'customer_portal': f"https://access.redhat.com/support/cases/#/case/{case_number}"
-                            },
-                            'url': f"https://access.redhat.com/support/cases/#/case/{case_number}"
-                        })
-
-                    app.logger.info(f"✅ Found {len(linked_cases)} linked Salesforce cases for {jira_key}")
+                # Get the same access token used for GraphQL
+                access_token = get_sfdc_access_token(config)
+                if not access_token:
+                    app.logger.warning("⚠️ No access token available for SFDC REST search")
                 else:
-                    app.logger.warning(f"❌ SFDC search failed: {sfdc_resp.status_code} - {sfdc_resp.text[:200]}")
+                    # Search for Salesforce cases that contain this Jira key
+                    sfdc_search_url = "https://access.redhat.com/hydra/rest/search/v2/cases"
+                    headers_sfdc = {
+                        'Authorization': f'Bearer {access_token}',
+                        'Accept': 'application/json',
+                        'Content-Type': 'application/json'
+                    }
+
+                    # Search for the Jira key in case descriptions and comments
+                    search_payload = {
+                        'q': jira_key,
+                        'start': 0,
+                        'rows': 20
+                    }
+
+                    app.logger.info(f"🔍 Searching SFDC for cases linked to {jira_key}")
+                    sfdc_resp = requests.post(sfdc_search_url, headers=headers_sfdc, json=search_payload, timeout=30)
+                    app.logger.info(f"📊 SFDC search response: status={sfdc_resp.status_code}")
+
+                    if sfdc_resp.status_code == 200:
+                        sfdc_data = sfdc_resp.json()
+                        docs = sfdc_data.get('response', {}).get('docs', [])
+                        total_found = sfdc_data.get('response', {}).get('numFound', 0)
+                        app.logger.info(f"📋 SFDC search found {total_found} cases mentioning {jira_key}")
+
+                        for doc in docs:
+                            case_number = doc.get('case_number', 'Unknown')
+                            salesforce_id = doc.get('id', '')
+
+                            case_urls = {
+                                'customer_portal': f"https://access.redhat.com/support/cases/#/case/{case_number}"
+                            }
+                            if salesforce_id:
+                                case_urls['lightning'] = f"https://redhatsupport.lightning.force.com/lightning/r/Case/{salesforce_id}/view"
+
+                            linked_cases.append({
+                                'case_number': case_number,
+                                'salesforce_id': salesforce_id,
+                                'summary': doc.get('subject', 'No summary'),
+                                'problem_statement': doc.get('case_summaryEnglish', doc.get('case_summary', 'No problem statement')),
+                                'status': doc.get('case_status', 'Unknown'),
+                                'urls': case_urls,
+                                'url': f"https://access.redhat.com/support/cases/#/case/{case_number}"
+                            })
+
+                        app.logger.info(f"✅ Found {len(linked_cases)} linked Salesforce cases for {jira_key}")
+                    else:
+                        app.logger.warning(f"❌ SFDC search failed: {sfdc_resp.status_code} - {sfdc_resp.text[:200]}")
             except Exception as e:
                 app.logger.error(f"❌ Failed to fetch linked Salesforce cases: {e}", exc_info=True)
         else:
@@ -3002,9 +3725,37 @@ def get_jira_issue_links(jira_key):
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/jira/<jira_key>/escalations', methods=['GET'])
+def get_jira_escalations(jira_key):
+    """Fetch linked Salesforce cases for a JIRA ticket"""
+    try:
+        # Reuse the existing jira-issue-links logic
+        username = request.headers.get('X-Username', '')
+
+        # Forward the request to the existing endpoint logic
+        with app.test_request_context(headers={'X-Username': username}):
+            response = get_jira_issue_links(jira_key)
+
+            # If it's a tuple (response, status_code), handle error
+            if isinstance(response, tuple):
+                return response
+
+            # Extract the JSON data
+            data = response.get_json()
+
+            # Return in the format expected by frontend
+            return jsonify({
+                'linked_cases': data.get('cases', [])
+            })
+
+    except Exception as e:
+        app.logger.error(f"Error fetching JIRA escalations for {jira_key}: {e}")
+        return jsonify({'error': str(e), 'linked_cases': []}), 500
+
+
 @app.route('/api/sfdc/case/<case_number>', methods=['GET'])
 def get_sfdc_case_details(case_number):
-    """Fetch full SFDC case details on-demand (lazy loading)"""
+    """Fetch full SFDC case details on-demand (lazy loading) - tries GraphQL first, falls back to REST"""
     try:
         username = request.headers.get('X-Username', '')
         tokens_file = os.path.join(os.path.dirname(__file__), 'user_tokens.json')
@@ -3018,10 +3769,118 @@ def get_sfdc_case_details(case_number):
                 if redhat_token:
                     config['redhat_token'] = redhat_token
 
-        # Get access token
-        access_token = get_sfdc_access_token(config)
+        # Try GraphQL first (works for Lightning-only cases)
+        try:
+            access_token = get_sfdc_access_token(config)
 
-        # Fetch case details
+            graphql_query = """
+            query GetCaseDetails($caseNumber: String!) {
+              redhat_support_uiapi {
+                query {
+                  RedHatSupportCase(
+                    where: { CaseNumber__c: { eq: $caseNumber } }
+                    first: 1
+                  ) {
+                    edges {
+                      node {
+                        Id
+                        CaseNumber__c { value }
+                        Subject { value }
+                        Description { value }
+                        Status { value }
+                        Priority { value }
+                        SBR_Group__c { value }
+                        SBT__c { value }
+                        Owner {
+                          ... on RedHatSupportGroup {
+                            Id
+                            Name { value }
+                          }
+                          ... on RedHatSupportUser {
+                            Id
+                            Name { value }
+                          }
+                        }
+                        Product { Name { value } }
+                        RedHatSupportAccount {
+                          Name { value }
+                          AccountNumber { value }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            """
+
+            graphql_endpoint = "https://graphql.redhat.com"
+            print(f"🔍 Fetching case details via GraphQL for {case_number}...", flush=True)
+            graphql_response = requests.post(
+                graphql_endpoint,
+                json={
+                    'query': graphql_query,
+                    'variables': {'caseNumber': case_number}
+                },
+                headers={
+                    'Authorization': f'Bearer {access_token}',
+                    'Content-Type': 'application/json',
+                    'apollographql-client-name': 'seekr-ai',
+                    'apollographql-client-version': '1.0.0',
+                    'Apollo-Require-Preflight': 'true'
+                },
+                timeout=10
+            )
+
+            print(f"📡 GraphQL case detail response status: {graphql_response.status_code}", flush=True)
+            if graphql_response.status_code != 200:
+                print(f"⚠️ GraphQL error response: {graphql_response.text[:500]}", flush=True)
+
+            if graphql_response.status_code == 200:
+                result = graphql_response.json()
+                edges = result.get("data", {}).get("redhat_support_uiapi", {}).get("query", {}).get("RedHatSupportCase", {}).get("edges", [])
+                print(f"🔍 GraphQL returned {len(edges)} case(s) for {case_number}", flush=True)
+
+                if edges:
+                    node = edges[0].get("node", {})
+
+                    # Extract Owner name from polymorphic Owner field (User or Group)
+                    owner_obj = node.get("Owner", {})
+                    if owner_obj and isinstance(owner_obj, dict):
+                        owner_name_obj = owner_obj.get("Name", {})
+                        owner_name = owner_name_obj.get("value", "N/A") if owner_name_obj else "N/A"
+                    else:
+                        owner_name = "N/A"
+
+                    account_obj = node.get("RedHatSupportAccount", {})
+                    account_name = account_obj.get("Name", {}).get("value", "N/A") if account_obj else "N/A"
+                    account_number = account_obj.get("AccountNumber", {}).get("value", "N/A") if account_obj else "N/A"
+
+                    product_obj = node.get("Product", {})
+                    product = product_obj.get("Name", {}).get("value", "N/A") if product_obj else "N/A"
+
+                    sbr = node.get("SBR_Group__c", {}).get("value", "N/A") if node.get("SBR_Group__c") else "N/A"
+                    sbt = node.get("SBT__c", {}).get("value", "N/A") if node.get("SBT__c") else "N/A"
+
+                    details = {
+                        'owner': owner_name,
+                        'account_number': account_number,
+                        'account_name': account_name,
+                        'sbt': sbt,
+                        'sbr': sbr,
+                        'description': node.get("Description", {}).get("value", "No description available"),
+                        'salesforce_id': node.get("Id", ""),
+                        'product': product
+                    }
+
+                    print(f"✅ GraphQL case details for {case_number}: owner={owner_name}, sbr={sbr}, sbt={sbt}")
+                    return jsonify(details)
+
+        except Exception as graphql_error:
+            print(f"⚠️ GraphQL case detail failed for {case_number}: {graphql_error}, falling back to REST...")
+
+        # Fall back to REST API (for older cases)
+        access_token = get_sfdc_access_token(config)
         case_detail_url = f"{SFDC_API_BASE}/hydra/rest/cases/{case_number}"
         case_resp = requests.get(
             case_detail_url,
@@ -3033,7 +3892,7 @@ def get_sfdc_case_details(case_number):
         )
 
         if case_resp.status_code != 200:
-            return jsonify({'error': f'Failed to fetch case details: {case_resp.status_code}'}), case_resp.status_code
+            return jsonify({'error': f'Case not found'}), 404
 
         case_detail = case_resp.json()
 
@@ -3049,14 +3908,19 @@ def get_sfdc_case_details(case_number):
         if sbt_value is None or sbt_value == '':
             sbt_value = case_detail.get('sbtState', 'N/A')
 
+        # Extract Salesforce Object ID and product for Lightning URL construction
+        salesforce_id = case_detail.get('id', case_detail.get('caseId', ''))
+        product = case_detail.get('product', 'N/A')
+
         details = {
             'owner': owner_name,
             'account_number': case_detail.get('accountNumber', 'N/A'),
             'account_name': account_name,
-            'internal_status': case_detail.get('internalStatus', 'N/A'),
             'sbt': sbt_value,
             'sbr': case_detail.get('sbrGroup', 'N/A'),
-            'description': case_detail.get('description', case_detail.get('caseDescription', 'No description available'))
+            'description': case_detail.get('description', case_detail.get('caseDescription', 'No description available')),
+            'salesforce_id': salesforce_id,
+            'product': product
         }
 
         return jsonify(details)
@@ -3090,87 +3954,278 @@ def get_sfdc_case_related_content(case_number):
 
         app.logger.info(f"🔍 Fetching Related Content for SFDC case {case_number}")
 
-        # Fetch case comments from Hydra API
-        comments_url = f"{SFDC_API_BASE}/hydra/rest/cases/{case_number}/comments"
-        comments_resp = requests.get(
-            comments_url,
-            headers={
-                'Authorization': f'Bearer {access_token}',
-                'Accept': 'application/json'
-            },
-            timeout=15
-        )
-
         kcs_articles = []
         redhat_docs = []
         slack_threads = []
         icm_tickets = []
-
-        # Also fetch case description to parse for URLs
-        case_url = f"{SFDC_API_BASE}/hydra/rest/cases/{case_number}"
-        case_resp = requests.get(
-            case_url,
-            headers={
-                'Authorization': f'Bearer {access_token}',
-                'Accept': 'application/json'
-            },
-            timeout=10
-        )
-
         all_texts = []
+        text_to_author = {}  # Map text to author name
 
-        # Parse case description
-        if case_resp.status_code == 200:
-            case_data = case_resp.json()
-            description = case_data.get('description', '') or case_data.get('caseDescription', '') or ''
+        # Try GraphQL first for better Lightning case support
+        try:
+            app.logger.info(f"  🔍 Trying GraphQL for case {case_number} comments (including private)")
+
+            # First, get the case ID and description
+            graphql_query_case = """
+            query GetCase($caseNumber: String!) {
+              redhat_support_uiapi {
+                query {
+                  RedHatSupportCase(where: { CaseNumber__c: { eq: $caseNumber } }, first: 1) {
+                    edges {
+                      node {
+                        Id
+                        Description { value }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            """
+
+            graphql_resp = requests.post(
+                "https://graphql.redhat.com",
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json",
+                    "apollographql-client-name": "seekr-ai",
+                    "apollographql-client-version": "1.0.0",
+                    "Apollo-Require-Preflight": "true"
+                },
+                json={
+                    "query": graphql_query_case,
+                    "variables": {"caseNumber": case_number}
+                },
+                timeout=30
+            )
+
+            if graphql_resp.status_code != 200:
+                app.logger.warning(f"  ⚠️ GraphQL case query failed with HTTP {graphql_resp.status_code}, falling back to REST API")
+                raise Exception(f"GraphQL HTTP {graphql_resp.status_code}")
+
+            graphql_result = graphql_resp.json()
+            edges = graphql_result.get("data", {}).get("redhat_support_uiapi", {}).get("query", {}).get("RedHatSupportCase", {}).get("edges", [])
+
+            if not edges:
+                app.logger.warning(f"  ⚠️ GraphQL found no case for {case_number}, falling back to REST API")
+                raise Exception("GraphQL returned no case")
+
+            node = edges[0].get("node", {})
+            case_id = node.get("Id", "")
+
+            # Get case description
+            description = node.get("Description", {}).get("value", "")
             if description:
                 all_texts.append(description)
 
-        # Parse comments
-        if comments_resp.status_code == 200:
-            comments_data = comments_resp.json()
+            # Now fetch comments using the case ID
+            graphql_query_comments = """
+            query GetCaseComments($caseId: ID!) {
+              redhat_support_uiapi {
+                query {
+                  RedHatSupportCaseComment__c(where: { Case__c: { eq: $caseId } }, first: 200) {
+                    edges {
+                      node {
+                        Id
+                        Body__c { value }
+                        IsAssociate__c { value }
+                        IsCustomer__c { value }
+                        LastModifiedByName__c { value }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            """
 
-            # Handle different response formats
-            if isinstance(comments_data, list):
-                comments = comments_data
-            elif isinstance(comments_data, dict):
-                comments = comments_data.get('comments', comments_data.get('body', []))
-                if not isinstance(comments, list):
-                    comments = [comments_data]
+            # Fetch comments using case ID
+            app.logger.info(f"  🔍 Querying GraphQL for comments with Case ID: {case_id}")
+            comments_resp = requests.post(
+                "https://graphql.redhat.com",
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json",
+                    "apollographql-client-name": "seekr-ai",
+                    "apollographql-client-version": "1.0.0",
+                    "Apollo-Require-Preflight": "true"
+                },
+                json={
+                    "query": graphql_query_comments,
+                    "variables": {"caseId": case_id}
+                },
+                timeout=30
+            )
+
+            app.logger.info(f"  📡 GraphQL comments response: HTTP {comments_resp.status_code}")
+
+            if comments_resp.status_code == 200:
+                comments_result = comments_resp.json()
+
+                # Check for GraphQL errors
+                if "errors" in comments_result:
+                    app.logger.error(f"  ❌ GraphQL errors: {comments_result['errors']}")
+                    raise Exception(f"GraphQL errors: {comments_result['errors']}")
+
+                comment_edges = comments_result.get("data", {}).get("redhat_support_uiapi", {}).get("query", {}).get("RedHatSupportCaseComment__c", {}).get("edges", [])
+
+                app.logger.info(f"  📊 GraphQL returned {len(comment_edges)} comment edges")
+
+                associate_count = 0
+                customer_count = 0
+                ai_assistant_count = 0
+
+                for i, comment_edge in enumerate(comment_edges):
+                    comment_node = comment_edge.get("node", {})
+                    comment_body = comment_node.get("Body__c", {}).get("value", "")
+                    is_associate = comment_node.get("IsAssociate__c", {}).get("value", False)
+                    is_customer = comment_node.get("IsCustomer__c", {}).get("value", False)
+
+                    # Get author name (LastModifiedByName__c contains the comment author)
+                    author_name = comment_node.get("LastModifiedByName__c", {}).get("value", "")
+
+                    if comment_body:
+                        all_texts.append(comment_body)
+                        text_to_author[comment_body] = author_name
+
+                        if is_associate:
+                            associate_count += 1
+                        if is_customer:
+                            customer_count += 1
+
+                        if "Support AI Assistant Service Account" in author_name:
+                            ai_assistant_count += 1
+
+                        # Log first comment preview
+                        if i == 0:
+                            preview = comment_body[:150].replace('\n', ' ')
+                            app.logger.info(f"    First comment preview: {preview}... (Author: {author_name})")
+
+                app.logger.info(f"  ✅ GraphQL fetched {len(comment_edges)} comments for case {case_number} (Associate: {associate_count}, Customer: {customer_count}, AI Assistant: {ai_assistant_count})")
             else:
-                comments = []
+                # Log the response body for debugging
+                try:
+                    error_body = comments_resp.json()
+                    app.logger.error(f"  ❌ GraphQL comments HTTP {comments_resp.status_code}: {error_body}")
+                except:
+                    app.logger.error(f"  ❌ GraphQL comments HTTP {comments_resp.status_code}: {comments_resp.text[:200]}")
+                app.logger.warning(f"  ⚠️ GraphQL comments query failed with HTTP {comments_resp.status_code}, falling back to REST API")
+                raise Exception(f"GraphQL HTTP {comments_resp.status_code}")
 
-            app.logger.info(f"  📋 Found {len(comments)} comments for case {case_number}")
+        except Exception as graphql_error:
+            # Fall back to REST API
+            app.logger.info(f"  🔄 Falling back to REST API: {graphql_error}")
 
-            for comment in comments:
-                if isinstance(comment, str):
-                    comment_text = comment
-                elif isinstance(comment, dict):
-                    comment_text = comment.get('text', comment.get('body', comment.get('commentBody', comment.get('caseComment', ''))))
-                    if not comment_text:
-                        comment_text = str(comment)
+            # Fetch case comments from Hydra API
+            comments_url = f"{SFDC_API_BASE}/hydra/rest/cases/{case_number}/comments"
+            comments_resp = requests.get(
+                comments_url,
+                headers={
+                    'Authorization': f'Bearer {access_token}',
+                    'Accept': 'application/json'
+                },
+                timeout=15
+            )
+
+            # Also fetch case description to parse for URLs
+            case_url = f"{SFDC_API_BASE}/hydra/rest/cases/{case_number}"
+            case_resp = requests.get(
+                case_url,
+                headers={
+                    'Authorization': f'Bearer {access_token}',
+                    'Accept': 'application/json'
+                },
+                timeout=10
+            )
+
+            # Parse case description
+            if case_resp.status_code == 200:
+                case_data = case_resp.json()
+                description = case_data.get('description', '') or case_data.get('caseDescription', '') or ''
+                if description:
+                    all_texts.append(description)
+
+            # Parse comments
+            if comments_resp.status_code == 200:
+                comments_data = comments_resp.json()
+
+                # Handle different response formats
+                if isinstance(comments_data, list):
+                    comments = comments_data
+                elif isinstance(comments_data, dict):
+                    comments = comments_data.get('comments', comments_data.get('body', []))
+                    if not isinstance(comments, list):
+                        comments = [comments_data]
                 else:
-                    continue
-                if comment_text:
-                    all_texts.append(comment_text)
-        else:
-            app.logger.warning(f"  ⚠️ Failed to fetch comments: HTTP {comments_resp.status_code}")
+                    comments = []
+
+                app.logger.info(f"  📋 REST API found {len(comments)} comments for case {case_number}")
+
+                for comment in comments:
+                    if isinstance(comment, str):
+                        comment_text = comment
+                    elif isinstance(comment, dict):
+                        comment_text = comment.get('text', comment.get('body', comment.get('commentBody', comment.get('caseComment', ''))))
+                        if not comment_text:
+                            comment_text = str(comment)
+                    else:
+                        continue
+                    if comment_text:
+                        all_texts.append(comment_text)
+            else:
+                app.logger.warning(f"  ⚠️ REST API failed to fetch comments: HTTP {comments_resp.status_code}")
 
         # Parse all texts for KCS, Docs, and Slack URLs (same regex as Jira implementation)
-        for text in all_texts:
+        app.logger.info(f"  📝 Parsing {len(all_texts)} texts for URLs (description + comments)")
+        if len(all_texts) > 0:
+            for i, text in enumerate(all_texts[:3]):  # Log first 3 texts for debugging
+                preview = text[:200].replace('\n', ' ') if text else ''
+                app.logger.info(f"    Text {i+1} preview: {preview}...")
+
+        # Decode HTML entities before parsing URLs
+        import html
+        decoded_texts = [html.unescape(text) if text else '' for text in all_texts]
+
+        if len(decoded_texts) > 0:
+            app.logger.info(f"  🔓 Decoded {len(decoded_texts)} texts from HTML entities")
+            # Log a preview of decoded text
+            for i, text in enumerate(decoded_texts[:2]):
+                if 'slack' in text.lower():
+                    preview = text[:300].replace('\n', ' ')
+                    app.logger.info(f"    Decoded text {i+1} (contains 'slack'): {preview}...")
+
+        # Track KCS articles found by AI Assistant
+        kcs_from_ai = {}  # Map of KCS URL to author
+
+        for i, text in enumerate(decoded_texts):
+            # Get the original text to look up author
+            original_text = all_texts[i] if i < len(all_texts) else ""
+            author = text_to_author.get(original_text, "")
+
             # KCS articles
             kcs_pattern = r'https?://access\.redhat\.com/(solutions|articles)/(\d+)'
             kcs_matches = re.findall(kcs_pattern, text)
             for match in kcs_matches:
                 article_type, article_id = match
                 url = f"https://access.redhat.com/{article_type}/{article_id}"
+
+                # Track if this KCS was found in an AI Assistant comment
+                if "Support AI Assistant Service Account" in author:
+                    kcs_from_ai[url] = author
+
                 if url not in [a['url'] for a in kcs_articles]:
+                    # Add label if from AI Assistant
+                    title = f'KCS {article_type.capitalize()} {article_id}'
+                    if url in kcs_from_ai:
+                        title += ' (Support AI Assistant Service Account)'
+
                     kcs_articles.append({
                         'id': article_id,
                         'url': url,
-                        'title': f'KCS {article_type.capitalize()} {article_id}'
+                        'title': title,
+                        'from_ai_assistant': url in kcs_from_ai
                     })
-                    app.logger.info(f"  ✅ Found KCS article: {article_id}")
+                    app.logger.info(f"  ✅ Found KCS article: {article_id}{' (AI Assistant)' if url in kcs_from_ai else ''}")
 
             # Red Hat documentation
             docs_pattern = r'https?://(docs\.redhat\.com|access\.redhat\.com/documentation)/[^\s<>"\')]+'
@@ -3182,13 +4237,14 @@ def get_sfdc_case_related_content(case_number):
                     redhat_docs.append({'url': url, 'title': title})
                     app.logger.info(f"  ✅ Found Red Hat doc: {url[:80]}")
 
-            # Slack threads
-            slack_pattern = r'https?://redhat-internal\.slack\.com/archives/([A-Z0-9]+)/p(\d+)'
-            slack_matches = re.findall(slack_pattern, text)
-            for match in slack_matches:
-                channel_id, thread_ts = match
+            # Slack threads (match both redhat-internal and redhat.enterprise domains)
+            slack_pattern = r'(https?://(redhat-internal|redhat\.enterprise)\.slack\.com/archives/([A-Z0-9]+)/p(\d+))'
+            for match in re.finditer(slack_pattern, text):
+                url = match.group(1)  # Full URL
+                channel_id = match.group(3)
+                thread_ts = match.group(4)
                 thread_ts_formatted = thread_ts[:10] + '.' + thread_ts[10:]
-                url = f"https://redhat-internal.slack.com/archives/{channel_id}/p{thread_ts}"
+
                 if url not in [s['url'] for s in slack_threads]:
                     slack_threads.append({
                         'channel_id': channel_id,
@@ -3196,7 +4252,7 @@ def get_sfdc_case_related_content(case_number):
                         'url': url,
                         'title': f'Slack Thread in {channel_id}'
                     })
-                    app.logger.info(f"  ✅ Found Slack thread: {channel_id}/p{thread_ts}")
+                    app.logger.info(f"  ✅ Found Slack thread: {channel_id}/p{thread_ts} ({url})")
 
             # ICM tickets (Microsoft ICM portal)
             icm_pattern = r'https?://portal\.microsofticm\.com/imp/v\d+/incidents/details/(\d+)/summary/?'
@@ -3211,9 +4267,13 @@ def get_sfdc_case_related_content(case_number):
                     })
                     app.logger.info(f"  ✅ Found ICM ticket: {incident_id}")
 
+        # Log summary of what was found
+        app.logger.info(f"  📊 Related Content for {case_number}: {len(kcs_articles)} KCS, {len(redhat_docs)} Docs, {len(slack_threads)} Slack, {len(icm_tickets)} ICM")
+
         # Resolve Slack channel IDs to channel names
         slack_xoxc = user_tokens_data.get('slack_xoxc', '') if user_tokens_data else ''
         slack_xoxd = user_tokens_data.get('slack_xoxd', '') if user_tokens_data else ''
+        app.logger.info(f"  🔍 Slack credentials available: xoxc={'✅' if slack_xoxc else '❌'}, xoxd={'✅' if slack_xoxd else '❌'}, threads={len(slack_threads)}")
         if slack_xoxc and slack_xoxd and slack_threads:
             unique_channel_ids = set(t['channel_id'] for t in slack_threads)
             channel_name_map = {}
@@ -3262,12 +4322,15 @@ def get_sfdc_case_related_content(case_number):
                             kcs_data = resp.json()
                             docs = kcs_data.get('response', {}).get('docs', [])
                             if docs:
-                                article['title'] = docs[0].get('publishedTitle', article['title'])
+                                fetched_title = docs[0].get('publishedTitle', article['title'])
+                                # Preserve AI Assistant label if present
+                                if article.get('from_ai_assistant'):
+                                    article['title'] = fetched_title + ' (Support AI Assistant Service Account)'
+                                else:
+                                    article['title'] = fetched_title
                                 app.logger.info(f"  ✅ KCS {article_id} title: {article['title']}")
                     except Exception as e:
                         app.logger.warning(f"Failed to fetch KCS title for {article_id}: {e}")
-
-        app.logger.info(f"  📊 Related Content for {case_number}: {len(kcs_articles)} KCS, {len(redhat_docs)} Docs, {len(slack_threads)} Slack, {len(icm_tickets)} ICM")
 
         return jsonify({
             'kcs_articles': kcs_articles,
@@ -3291,79 +4354,227 @@ def get_sfdc_case_related_content(case_number):
 
 @app.route('/api/case-escalations/<case_number>', methods=['GET'])
 def get_case_escalations(case_number):
-    """Fetch OHSS tickets that link to this SFDC case"""
+    """Fetch external trackers (JIRA) linked to this SFDC case"""
     try:
         username = request.headers.get('X-Username', '')
         tokens_file = os.path.join(os.path.dirname(__file__), 'user_tokens.json')
 
+        config = get_config()
+        redhat_token = ''
         atlassian_email = ''
         atlassian_token = ''
 
-        if os.path.exists(tokens_file):
+        if username and os.path.exists(tokens_file):
             with open(tokens_file, 'r') as f:
                 all_tokens = json.load(f)
                 user_tokens = all_tokens.get(username, {})
+                redhat_token = user_tokens.get('redhat_token', '')
+                if redhat_token:
+                    config['redhat_token'] = redhat_token
                 atlassian_email = user_tokens.get('atlassian_email', '')
                 atlassian_token = user_tokens.get('atlassian_token', '')
 
-        if not atlassian_email or not atlassian_token:
-            app.logger.warning(f"⚠️ Jira credentials not configured for case {case_number}")
-            return jsonify({
-                'external_trackers': [],
-                'error': 'Jira credentials not configured'
-            })
-
-        app.logger.info(f"🔍 Searching Jira for OHSS tickets linked to case {case_number}")
-
-        # Search Jira for tickets that mention this case number in description or comments
-        # JQL: text ~ "04419323" AND project in (OHSS, SREP)
-        jql = f'text ~ "{case_number}" AND project in (OHSS, SREP) ORDER BY created DESC'
-
-        jira_search_url = "https://redhat.atlassian.net/rest/api/3/search/jql"
-
-        params = {
-            'jql': jql,
-            'maxResults': 50,
-            'fields': 'summary,status,description,comment'
-        }
-
-        app.logger.info(f"  JQL: {jql}")
-
-        jira_resp = requests.get(
-            jira_search_url,
-            auth=(atlassian_email, atlassian_token),
-            params=params,
-            headers={'Accept': 'application/json'},
-            timeout=15
-        )
-
         external_trackers = []
 
-        if jira_resp.status_code == 200:
-            jira_data = jira_resp.json()
-            issues = jira_data.get('issues', [])
+        # First, try to fetch external trackers from Salesforce via GraphQL
+        app.logger.info(f"🔍 Fetching external trackers from Salesforce for case {case_number}")
 
-            app.logger.info(f"  ✅ Found {len(issues)} OHSS/SREP tickets mentioning case {case_number}")
+        try:
+            access_token = get_sfdc_access_token(config)
+            if access_token:
+                # First get the case ID, then query for external links using the case ID
+                # Step 1: Get case ID
+                case_id_query = """
+                query GetCaseId($caseNumber: String!) {
+                  redhat_support_uiapi {
+                    query {
+                      RedHatSupportCase(where: { CaseNumber__c: { eq: $caseNumber } }, first: 1) {
+                        edges {
+                          node {
+                            Id
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+                """
 
-            for issue in issues:
-                key = issue.get('key', 'Unknown')
-                fields = issue.get('fields', {})
-                summary = fields.get('summary', 'No title')
-                status_obj = fields.get('status', {})
-                status = status_obj.get('name', 'Unknown') if isinstance(status_obj, dict) else 'Unknown'
+                case_id_resp = requests.post(
+                    "https://graphql.redhat.com",
+                    headers={
+                        "Authorization": f"Bearer {access_token}",
+                        "Content-Type": "application/json",
+                        "apollographql-client-name": "seekr-ai",
+                        "apollographql-client-version": "1.0.0",
+                        "Apollo-Require-Preflight": "true"
+                    },
+                    json={
+                        "query": case_id_query,
+                        "variables": {"caseNumber": case_number}
+                    },
+                    timeout=30
+                )
 
-                external_trackers.append({
-                    'resourceKey': key,
-                    'resourceURL': f"https://issues.redhat.com/browse/{key}",
-                    'title': summary,
-                    'status': status,
-                    'system': 'Jira'
-                })
+                if case_id_resp.status_code != 200:
+                    app.logger.error(f"  ❌ Failed to get case ID: HTTP {case_id_resp.status_code}")
+                    raise Exception(f"Failed to get case ID")
 
-                app.logger.info(f"    ✓ {key}: {summary[:60]}")
+                case_id_result = case_id_resp.json()
+                case_edges = case_id_result.get("data", {}).get("redhat_support_uiapi", {}).get("query", {}).get("RedHatSupportCase", {}).get("edges", [])
 
-        else:
-            app.logger.warning(f"  ⚠️ Jira search failed: HTTP {jira_resp.status_code}")
+                if not case_edges:
+                    app.logger.warning(f"  ⚠️ No case found for {case_number}")
+                    raise Exception("No case found")
+
+                case_id = case_edges[0].get("node", {}).get("Id", "")
+                app.logger.info(f"  📍 Case ID: {case_id}")
+
+                # Step 2: Query for external links using the case ID
+                # Try different field name patterns since the schema is unclear
+                graphql_query = """
+                query GetExternalLinks($caseId: ID!) {
+                  redhat_support_uiapi {
+                    query {
+                      RedHatSupportExternalLink__c(where: { Case__c: { eq: $caseId } }, first: 20) {
+                        edges {
+                          node {
+                            Id
+                            ExternalId { value }
+                            ExternalLinkName { value }
+                            ExternalURL { value }
+                            ExternalType { value }
+                            Status { value }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+                """
+
+                graphql_resp = requests.post(
+                    "https://graphql.redhat.com",
+                    headers={
+                        "Authorization": f"Bearer {access_token}",
+                        "Content-Type": "application/json",
+                        "apollographql-client-name": "seekr-ai",
+                        "apollographql-client-version": "1.0.0",
+                        "Apollo-Require-Preflight": "true"
+                    },
+                    json={
+                        "query": graphql_query,
+                        "variables": {"caseId": case_id}
+                    },
+                    timeout=30
+                )
+
+                if graphql_resp.status_code == 200:
+                    graphql_result = graphql_resp.json()
+
+                    if "errors" in graphql_result:
+                        app.logger.error(f"  ❌ GraphQL errors: {graphql_result['errors']}")
+                    else:
+                        # Check for external links from the separate query
+                        tracker_edges = graphql_result.get("data", {}).get("redhat_support_uiapi", {}).get("query", {}).get("RedHatSupportExternalLink__c", {}).get("edges", [])
+
+                        app.logger.info(f"  ✅ GraphQL found {len(tracker_edges)} external links")
+
+                        for tracker_edge in tracker_edges:
+                            tracker_node = tracker_edge.get("node", {})
+                            external_id = tracker_node.get("ExternalId", {}).get("value", "")
+                            external_name = tracker_node.get("ExternalLinkName", {}).get("value", "")
+                            external_url = tracker_node.get("ExternalURL", {}).get("value", "")
+                            external_type = tracker_node.get("ExternalType", {}).get("value", "")
+                            status = tracker_node.get("Status", {}).get("value", "")
+
+                            # Extract JIRA ticket ID from the URL (e.g., RFE-9044 from https://redhat.atlassian.net/browse/RFE-9044)
+                            resource_key = None
+                            if external_url:
+                                # Parse URL to extract ticket ID
+                                # Format: https://redhat.atlassian.net/browse/TICKET-ID or https://issues.redhat.com/browse/TICKET-ID
+                                match = re.search(r'/browse/([A-Z]+-\d+)', external_url)
+                                if match:
+                                    resource_key = match.group(1)
+                                else:
+                                    # Fallback to external_name if URL parsing fails
+                                    resource_key = external_name or external_id
+                            else:
+                                resource_key = external_name or external_id
+
+                            if resource_key and external_url:
+                                external_trackers.append({
+                                    'resourceKey': resource_key,
+                                    'resourceURL': external_url,
+                                    'title': resource_key,  # Use ticket ID as title
+                                    'status': status or 'Unknown',
+                                    'system': external_type or 'Jira'
+                                })
+                                app.logger.info(f"    ✓ {resource_key} ({external_type or 'External Link'}): {external_url}")
+                else:
+                    try:
+                        error_body = graphql_resp.json()
+                        app.logger.error(f"  ❌ GraphQL HTTP {graphql_resp.status_code}: {error_body}")
+                    except:
+                        app.logger.error(f"  ❌ GraphQL HTTP {graphql_resp.status_code}: {graphql_resp.text[:300]}")
+        except Exception as e:
+            app.logger.warning(f"  ⚠️ Failed to fetch from Salesforce GraphQL: {e}")
+            import traceback
+            app.logger.debug(f"Traceback: {traceback.format_exc()}")
+
+        # If no external trackers found in Salesforce and we have Jira credentials, search Jira
+        if not external_trackers and atlassian_email and atlassian_token:
+            app.logger.info(f"🔍 Searching Jira for tickets linked to case {case_number}")
+
+            # Search Jira for tickets that mention this case number in description or comments
+            # Search across all projects to catch RFE, OHSS, SREP, etc.
+            jql = f'text ~ "{case_number}" ORDER BY created DESC'
+
+            jira_search_url = "https://redhat.atlassian.net/rest/api/3/search/jql"
+
+            params = {
+                'jql': jql,
+                'maxResults': 50,
+                'fields': 'summary,status,description,comment'
+            }
+
+            app.logger.info(f"  JQL: {jql}")
+
+            jira_resp = requests.get(
+                jira_search_url,
+                auth=(atlassian_email, atlassian_token),
+                params=params,
+                headers={'Accept': 'application/json'},
+                timeout=15
+            )
+
+            if jira_resp.status_code == 200:
+                jira_data = jira_resp.json()
+                issues = jira_data.get('issues', [])
+
+                app.logger.info(f"  ✅ Found {len(issues)} Jira tickets mentioning case {case_number}")
+
+                for issue in issues:
+                    key = issue.get('key', 'Unknown')
+                    fields = issue.get('fields', {})
+                    summary = fields.get('summary', 'No title')
+                    status_obj = fields.get('status', {})
+                    status = status_obj.get('name', 'Unknown') if isinstance(status_obj, dict) else 'Unknown'
+
+                    # Avoid duplicates from GraphQL results
+                    if not any(t['resourceKey'] == key for t in external_trackers):
+                        external_trackers.append({
+                            'resourceKey': key,
+                            'resourceURL': f"https://issues.redhat.com/browse/{key}",
+                            'title': summary,
+                            'status': status,
+                            'system': 'Jira'
+                        })
+
+                        app.logger.info(f"    ✓ {key}: {summary[:60]}")
+
+            else:
+                app.logger.warning(f"  ⚠️ Jira search failed: HTTP {jira_resp.status_code}")
 
         return jsonify({
             'external_trackers': external_trackers,

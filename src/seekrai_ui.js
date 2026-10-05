@@ -1864,7 +1864,10 @@ document.querySelectorAll('.detail-tab').forEach(tab => {
             const trackersElement = document.getElementById('detail-external-trackers');
             if (trackersElement && trackersElement.dataset.loaded === 'false') {
                 const caseNumber = trackersElement.dataset.caseNumber;
+                const jiraKey = trackersElement.dataset.jiraKey;
+
                 if (caseNumber) {
+                    // SFDC case: Fetch linked JIRA tickets
                     console.log('🔄 Lazy loading external trackers for case:', caseNumber);
                     trackersElement.innerHTML = '<p style="color: #666;">Loading external trackers...</p>';
                     trackersElement.dataset.loaded = 'loading';
@@ -1902,6 +1905,37 @@ document.querySelectorAll('.detail-tab').forEach(tab => {
                         .catch(error => {
                             console.error('Error loading external trackers:', error);
                             trackersElement.innerHTML = '<p style="color: #999;">Failed to load external trackers</p>';
+                            trackersElement.dataset.loaded = 'error';
+                        });
+                } else if (jiraKey) {
+                    // JIRA ticket: Fetch linked SFDC cases
+                    console.log('🔄 Lazy loading linked SFDC cases for JIRA:', jiraKey);
+                    trackersElement.innerHTML = '<p style="color: #666;">Loading linked Salesforce cases...</p>';
+                    trackersElement.dataset.loaded = 'loading';
+
+                    fetch(`/api/jira/${jiraKey}/escalations`, {
+                        credentials: 'include'
+                    })
+                        .then(response => {
+                            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                            return response.json();
+                        })
+                        .then(data => {
+                            console.log('📋 Linked SFDC cases received:', data);
+
+                            const linkedCases = data.linked_cases || [];
+
+                            if (linkedCases && Array.isArray(linkedCases) && linkedCases.length > 0) {
+                                renderLinkedSFDCCases(linkedCases);
+                            } else {
+                                trackersElement.innerHTML = '<p style="color: #666;">No linked Salesforce cases found</p>';
+                            }
+
+                            trackersElement.dataset.loaded = 'true';
+                        })
+                        .catch(error => {
+                            console.error('Error loading linked SFDC cases:', error);
+                            trackersElement.innerHTML = '<p style="color: #999;">Failed to load linked Salesforce cases</p>';
                             trackersElement.dataset.loaded = 'error';
                         });
                 }
@@ -3223,9 +3257,20 @@ function lazyLoadVisibleSFDCDetails(visibleCases) {
                         c => c.case_number === caseItem.case_number
                     );
                     if (caseIndex !== -1) {
+                        const currentCase = window.lastSearchResults.sfdc.cases[caseIndex];
+
+                        // Construct Lightning URL if we have salesforce_id
+                        if (details.salesforce_id && !currentCase.urls?.lightning) {
+                            const lightningUrl = `https://redhatsupport.lightning.force.com/lightning/r/Case/${details.salesforce_id}/view`;
+
+                            // Add Lightning URL to existing urls object
+                            currentCase.urls = currentCase.urls || {};
+                            currentCase.urls.lightning = lightningUrl;
+                        }
+
                         // Merge details into the case
                         window.lastSearchResults.sfdc.cases[caseIndex] = {
-                            ...window.lastSearchResults.sfdc.cases[caseIndex],
+                            ...currentCase,
                             ...details
                         };
                     }
@@ -3243,6 +3288,40 @@ function lazyLoadVisibleSFDCDetails(visibleCases) {
                             <strong>Product:</strong> ${caseItem.product || 'N/A'} &nbsp;&nbsp;&nbsp;&nbsp;
                             <strong>SBR:</strong> ${details.sbr || 'N/A'}
                         `;
+                    }
+
+                    // Update view links to include Lightning URL if we have salesforce_id
+                    const viewLinksDiv = resultItem.querySelector('.sfdc-view-links');
+                    if (viewLinksDiv && details.salesforce_id && caseItem.urls) {
+                        const lightningUrl = `https://redhatsupport.lightning.force.com/lightning/r/Case/${details.salesforce_id}/view`;
+                        const product = details.product || caseItem.product;
+                        const accountName = details.account_name;
+
+                        // Rebuild links based on product and account
+                        let linksHtml = '';
+
+                        // ARO + MS-TEP: all 4 links
+                        if (product === "Azure Red Hat OpenShift" && accountName === "MS-TEP") {
+                            if (caseItem.urls.caseview_plus) {
+                                linksHtml += `<a href="${caseItem.urls.caseview_plus}" target="_blank" class="view-link caseview">CaseView+</a>`;
+                            }
+                            if (caseItem.urls.classic) {
+                                linksHtml += `<a href="${caseItem.urls.classic}" target="_blank" class="view-link classic">Classic</a>`;
+                            }
+                            linksHtml += `<a href="${lightningUrl}" target="_blank" class="view-link lightning">Case View (Lightning)</a>`;
+                            if (caseItem.urls.customer_portal) {
+                                linksHtml += `<a href="${caseItem.urls.customer_portal}" target="_blank" class="view-link portal">Customer Portal</a>`;
+                            }
+                        }
+                        // All others: Lightning + Customer Portal only
+                        else {
+                            linksHtml += `<a href="${lightningUrl}" target="_blank" class="view-link lightning">Case View (Lightning)</a>`;
+                            if (caseItem.urls.customer_portal) {
+                                linksHtml += `<a href="${caseItem.urls.customer_portal}" target="_blank" class="view-link portal">Customer Portal</a>`;
+                            }
+                        }
+
+                        viewLinksDiv.innerHTML = linksHtml;
                     }
                 }
 
@@ -3334,9 +3413,10 @@ function renderSFDCResults(sfdc) {
             </div>
             ${caseItem.urls ? `
                 <div class="sfdc-view-links">
-                    <a href="${caseItem.urls.caseview_plus}" target="_blank" class="view-link caseview">CaseView+</a>
-                    <a href="${caseItem.urls.classic}" target="_blank" class="view-link classic">Classic</a>
-                    <a href="${caseItem.urls.customer_portal}" target="_blank" class="view-link portal">Customer Portal</a>
+                    ${caseItem.urls.caseview_plus ? `<a href="${caseItem.urls.caseview_plus}" target="_blank" class="view-link caseview">CaseView+</a>` : ''}
+                    ${caseItem.urls.classic ? `<a href="${caseItem.urls.classic}" target="_blank" class="view-link classic">Classic</a>` : ''}
+                    ${caseItem.urls.lightning ? `<a href="${caseItem.urls.lightning}" target="_blank" class="view-link lightning">Case View (Lightning)</a>` : ''}
+                    ${caseItem.urls.customer_portal ? `<a href="${caseItem.urls.customer_portal}" target="_blank" class="view-link portal">Customer Portal</a>` : ''}
                 </div>
             ` : `
                 <a href="${caseItem.url}" target="_blank" class="view-link portal">View Case</a>
@@ -3395,7 +3475,7 @@ function renderJiraResults(jira) {
         const productTag = extractProductTag(issue.product);
         const dataProductAttr = productTag ? `data-product="${productTag}"` : '';
         return `
-        <div class="result-item" ${dataProductAttr}>
+        <div class="result-item" ${dataProductAttr} data-jira-key="${issue.key}">
             <div class="result-header">
                 <div class="result-title">
                     <img src="/src/images/atlassian-jira.svg" class="result-icon" alt="Jira" />
@@ -3811,7 +3891,7 @@ function renderSOPResults(sop) {
     const totalItems = sop.sops.length;
 
     section.innerHTML = paginatedSops.map(doc => `
-        <div class="result-item">
+        <div class="result-item" data-sop-url="${doc.url || ''}">
             <div class="result-header">
                 <div class="result-title">
                     <img src="/src/images/Logo-Red_Hat-Hat_icon-Red-RGB.svg" class="result-icon" alt="Red Hat" />
@@ -3858,9 +3938,10 @@ function renderGitHubResults(github) {
         const cleanUrl = item.repository && item.path
             ? `https://github.com/${item.repository}/blob/master/${item.path}`
             : (item.url || '#');
+        const uniqueId = `${item.repository || ''}-${item.path || ''}-${item.sha || ''}`.replace(/[^a-zA-Z0-9-]/g, '-');
 
         return `
-        <div class="result-item">
+        <div class="result-item" data-github-id="${uniqueId}" data-github-url="${cleanUrl}">
             <div class="result-header">
                 <div class="result-title">
                     <img src="/src/images/github_logo_icon.svg" class="result-icon" alt="GitHub" />
@@ -3908,9 +3989,10 @@ function renderGitLabResults(gitlab) {
 
     section.innerHTML = paginatedResults.map(item => {
         const cleanUrl = item.url || '#';
+        const uniqueId = `${item.project_name || ''}-${item.path || ''}-${item.ref || ''}`.replace(/[^a-zA-Z0-9-]/g, '-');
 
         return `
-        <div class="result-item">
+        <div class="result-item" data-gitlab-id="${uniqueId}" data-gitlab-url="${cleanUrl}">
             <div class="result-header">
                 <div class="result-title">
                     <img src="/src/images/gitlab-icon.svg" class="result-icon" alt="GitLab" />
@@ -4141,51 +4223,61 @@ function showDetailPanel(resultData, source) {
         const metaRowElements = detailPanel.querySelectorAll('.meta-row');
 
         if (metaRows.length >= 9) {
-            // First column (5 rows)
+            // First column (4 rows - removed Internal Status from row 2)
             metaRows[0].textContent = 'Case Owner:';
             metaRows[1].textContent = 'Status:';
-            metaRows[2].textContent = 'Internal Status:';
-            metaRows[3].textContent = 'Account Number:';
-            metaRows[4].textContent = 'Account Name:';
+            metaRows[2].textContent = 'Account Number:';
+            metaRows[3].textContent = 'Account Name:';
 
-            // Second column (4 rows)
+            // Second column (4 rows) - rows 5-8 (row 4 is hidden, it's in first column in HTML)
             metaRows[5].textContent = 'Product:';
             metaRows[6].textContent = 'Severity:';
             metaRows[7].textContent = 'SBT:';
             metaRows[8].textContent = 'SBR:';
 
-            // Show all rows for SFDC
+            // Show rows 0-3 (first column), hide row 4, show rows 5-8 (second column)
             for (let i = 0; i < metaRowElements.length; i++) {
-                if (metaRowElements[i]) metaRowElements[i].style.display = '';
+                if (metaRowElements[i]) {
+                    metaRowElements[i].style.display = (i === 4) ? 'none' : '';
+                }
             }
         }
 
         // Show loading state first
+        // HTML structure: First column rows 0-4, Second column rows 5-8
+        // Row 0: detail-owner → Case Owner
+        // Row 1: detail-status → Status
+        // Row 2: detail-internal-status → Account Number
+        // Row 3: detail-account-number → Account Name
+        // Row 4: detail-account-name → HIDDEN
+        // Row 5: detail-product → Product
+        // Row 6: detail-severity → Severity
+        // Row 7: detail-sbt → SBT
+        // Row 8: detail-sbr → SBR
+
         document.getElementById('detail-owner').textContent = 'Loading...';
         document.getElementById('detail-status').textContent = resultData.status || 'Unknown';
-        document.getElementById('detail-internal-status').textContent = 'Loading...';
-        document.getElementById('detail-account-number').textContent = 'Loading...';
-        document.getElementById('detail-account-name').textContent = 'Loading...';
+        document.getElementById('detail-internal-status').textContent = 'Loading...';  // Account Number
+        document.getElementById('detail-account-number').textContent = 'Loading...';   // Account Name
 
         // Second Column
-        document.getElementById('detail-product').textContent = resultData.product || 'N/A';
-        document.getElementById('detail-severity').textContent = resultData.severity || 'N/A';
+        document.getElementById('detail-product').textContent = resultData.product || 'N/A';      // Product
+        document.getElementById('detail-severity').textContent = resultData.severity || 'N/A';    // Severity
 
         // Set loading state for SBT and SBR
-        const sbtElement = document.getElementById('detail-sbt');
+        const sbtElement = document.getElementById('detail-sbt');  // SBT
         sbtElement.textContent = 'Loading...';
-        document.getElementById('detail-sbr').textContent = 'Loading...';
+        document.getElementById('detail-sbr').textContent = 'Loading...';  // SBR
 
         // Lazy load full case details (use relative URL to avoid CORS)
         fetch(`/api/sfdc/case/${resultData.case_number}`)
             .then(response => response.json())
             .then(details => {
-                // Update all the enriched fields
+                // Update all the enriched fields from lazy load
                 document.getElementById('detail-owner').textContent = details.owner || 'N/A';
-                document.getElementById('detail-internal-status').textContent = details.internal_status || 'N/A';
-                document.getElementById('detail-account-number').textContent = details.account_number || 'N/A';
-                document.getElementById('detail-account-name').textContent = details.account_name || 'N/A';
-                document.getElementById('detail-sbr').textContent = details.sbr || 'N/A';
+                document.getElementById('detail-internal-status').textContent = details.account_number || 'N/A';  // Account Number
+                document.getElementById('detail-account-number').textContent = details.account_name || 'N/A';     // Account Name
+                document.getElementById('detail-sbr').textContent = details.sbr || 'N/A';  // SBR
 
                 // Format SBT with color coding
                 const sbtValue = details.sbt;
@@ -4247,7 +4339,6 @@ function showDetailPanel(resultData, source) {
                 document.getElementById('detail-owner').textContent = 'Error loading';
                 document.getElementById('detail-internal-status').textContent = 'Error loading';
                 document.getElementById('detail-account-number').textContent = 'Error loading';
-                document.getElementById('detail-account-name').textContent = 'Error loading';
                 sbtElement.textContent = 'Error loading';
                 document.getElementById('detail-sbr').textContent = 'Error loading';
             });
@@ -5261,15 +5352,8 @@ function showDetailPanel(resultData, source) {
             if (trackersElement) {
                 const linkedCases = cached.cases || [];
                 if (linkedCases.length > 0) {
-                    trackersElement.innerHTML = linkedCases.map(sfCase => {
-                        const caseNumber = sfCase.case_number || 'Unknown';
-                        const problemStatement = sfCase.problem_statement || sfCase.summary || 'No problem statement';
-                        const status = sfCase.status || 'Unknown';
-                        const classicUrl = sfCase.urls?.classic || `https://gss.my.salesforce.com/${sfCase.salesforce_id || ''}`;
-                        const portalUrl = sfCase.urls?.customer_portal || sfCase.url || `https://access.redhat.com/support/cases/#/case/${caseNumber}`;
-
-                        return `<div style="margin-bottom: 8px;">${caseNumber} - ${problemStatement} - (${status}) - <a href="${classicUrl}" target="_blank" style="color: #0052CC; text-decoration: none;">SFDC</a> | <a href="${portalUrl}" target="_blank" style="color: #0052CC; text-decoration: none;">Customer Portal</a></div>`;
-                    }).join('');
+                    // Use the centralized renderLinkedSFDCCases function
+                    renderLinkedSFDCCases(linkedCases);
                 } else {
                     trackersElement.innerHTML = '<p style="color: #666;">No linked Salesforce tickets found</p>';
                 }
@@ -5305,15 +5389,8 @@ function showDetailPanel(resultData, source) {
                         }
 
                         if (linkedCases.length > 0) {
-                            trackersElement.innerHTML = linkedCases.map(sfCase => {
-                                const caseNumber = sfCase.case_number || 'Unknown';
-                                const problemStatement = sfCase.problem_statement || sfCase.summary || 'No problem statement';
-                                const status = sfCase.status || 'Unknown';
-                                const classicUrl = sfCase.urls?.classic || `https://gss.my.salesforce.com/${sfCase.salesforce_id || ''}`;
-                                const portalUrl = sfCase.urls?.customer_portal || sfCase.url || `https://access.redhat.com/support/cases/#/case/${caseNumber}`;
-
-                                return `<div style="margin-bottom: 8px;">${caseNumber} - ${problemStatement} - (${status}) - <a href="${classicUrl}" target="_blank" style="color: #0052CC; text-decoration: none;">SFDC</a> | <a href="${portalUrl}" target="_blank" style="color: #0052CC; text-decoration: none;">Customer Portal</a></div>`;
-                            }).join('');
+                            // Use the centralized renderLinkedSFDCCases function
+                            renderLinkedSFDCCases(linkedCases);
                         } else {
                             // Show debug info if available
                             const debug = data.debug || {};
@@ -5459,10 +5536,29 @@ function renderLinkedSFDCCases(cases) {
             const caseNumber = sfCase.case_number || 'Unknown';
             const problemStatement = sfCase.problem_statement || sfCase.summary || 'No problem statement';
             const status = sfCase.status || 'Unknown';
-            const classicUrl = sfCase.urls?.classic || `https://gss.my.salesforce.com/${sfCase.salesforce_id || ''}`;
-            const portalUrl = sfCase.urls?.customer_portal || sfCase.url || `https://access.redhat.com/support/cases/#/case/${caseNumber}`;
 
-            return `<div style="margin-bottom: 8px;">${caseNumber} - ${problemStatement} - (${status}) - <a href="${classicUrl}" target="_blank" style="color: #0052CC; text-decoration: none;">SFDC</a> | <a href="${portalUrl}" target="_blank" style="color: #0052CC; text-decoration: none;">Customer Portal</a></div>`;
+            // Build links dynamically based on what URLs the backend provides
+            const links = [];
+            if (sfCase.urls?.caseview_plus) {
+                links.push(`<a href="${sfCase.urls.caseview_plus}" target="_blank" style="color: #0052CC; text-decoration: none;">CaseView+</a>`);
+            }
+            if (sfCase.urls?.classic) {
+                links.push(`<a href="${sfCase.urls.classic}" target="_blank" style="color: #0052CC; text-decoration: none;">Classic</a>`);
+            }
+            if (sfCase.urls?.lightning) {
+                links.push(`<a href="${sfCase.urls.lightning}" target="_blank" style="color: #0052CC; text-decoration: none;">Case View (Lightning)</a>`);
+            }
+            if (sfCase.urls?.customer_portal) {
+                links.push(`<a href="${sfCase.urls.customer_portal}" target="_blank" style="color: #0052CC; text-decoration: none;">Customer Portal</a>`);
+            }
+
+            // Fallback if no specific URLs provided
+            if (links.length === 0 && sfCase.url) {
+                links.push(`<a href="${sfCase.url}" target="_blank" style="color: #0052CC; text-decoration: none;">View Case</a>`);
+            }
+
+            const linksHtml = links.join(' | ');
+            return `<div style="margin-bottom: 8px;">${caseNumber} - ${problemStatement} - (${status}) - ${linksHtml}</div>`;
         }).join('');
     } else {
         trackersElement.innerHTML = '<p style="color: #666;">No linked Salesforce cases found</p>';
@@ -6163,33 +6259,59 @@ function addResultClickListeners() {
                 console.error('❌ Missing case number or search results');
             }
             sourceType = 'salesforce';
-        } else {
-            // For other sources, use index-based lookup
-            const allItemsInSection = section.querySelectorAll('.result-item');
-            const index = Array.from(allItemsInSection).indexOf(resultItem);
-
-            if (source === 'ohss') {
-                resultData = window.lastSearchResults?.jira?.issues?.[index];
-                sourceType = 'jira';
-            } else if (source === 'slack') {
-                resultData = window.lastSearchResults?.slack?.messages?.[index];
-                sourceType = 'slack';
-            } else if (source === 'kcs') {
-                resultData = window.lastSearchResults?.kcs?.articles?.[index];
-                console.log(`🔍 KCS Click - Index: ${index}, Has enriched data:`, {
-                    hasEnvironment: !!resultData?.environment,
-                    hasIssue: !!resultData?.issue,
-                    hasResolution: !!resultData?.resolution,
-                    articleId: resultData?.id
-                });
-                sourceType = 'kcs';
-            } else if (source === 'github') {
-                resultData = window.lastSearchResults?.github?.results?.[index];
-                sourceType = 'github';
-            } else if (source === 'gitlab') {
-                resultData = window.lastSearchResults?.gitlab?.results?.[index];
-                sourceType = 'gitlab';
+        } else if (source === 'ohss') {
+            // Use JIRA key attribute (pagination-safe)
+            const jiraKey = resultItem.getAttribute('data-jira-key');
+            if (jiraKey && window.lastSearchResults?.jira?.issues) {
+                resultData = window.lastSearchResults.jira.issues.find(issue => issue.key === jiraKey);
             }
+            sourceType = 'jira';
+        } else if (source === 'slack') {
+            // Use channel ID and thread timestamp (pagination-safe)
+            const channelId = resultItem.getAttribute('data-channel-id');
+            const threadTs = resultItem.getAttribute('data-thread-ts');
+            if (channelId && threadTs && window.lastSearchResults?.slack?.messages) {
+                resultData = window.lastSearchResults.slack.messages.find(
+                    msg => msg.channel_id === channelId && msg.thread_ts === threadTs
+                );
+            }
+            sourceType = 'slack';
+        } else if (source === 'kcs') {
+            // Use KCS article ID (pagination-safe)
+            const articleId = resultItem.getAttribute('data-kcs-id');
+            if (articleId && window.lastSearchResults?.kcs?.articles) {
+                resultData = window.lastSearchResults.kcs.articles.find(article => article.id === articleId);
+                console.log(`🔍 KCS Click - Article ID: ${articleId}, Found:`, resultData ? 'Yes' : 'No');
+            }
+            sourceType = 'kcs';
+        } else if (source === 'github') {
+            // Use GitHub URL attribute (pagination-safe)
+            const githubUrl = resultItem.getAttribute('data-github-url');
+            if (githubUrl && window.lastSearchResults?.github?.results) {
+                resultData = window.lastSearchResults.github.results.find(
+                    item => {
+                        const cleanUrl = item.repository && item.path
+                            ? `https://github.com/${item.repository}/blob/master/${item.path}`
+                            : (item.url || '#');
+                        return cleanUrl === githubUrl;
+                    }
+                );
+            }
+            sourceType = 'github';
+        } else if (source === 'gitlab') {
+            // Use GitLab URL attribute (pagination-safe)
+            const gitlabUrl = resultItem.getAttribute('data-gitlab-url');
+            if (gitlabUrl && window.lastSearchResults?.gitlab?.results) {
+                resultData = window.lastSearchResults.gitlab.results.find(item => (item.url || '#') === gitlabUrl);
+            }
+            sourceType = 'gitlab';
+        } else if (source === 'sop') {
+            // Use SOP URL attribute (pagination-safe)
+            const sopUrl = resultItem.getAttribute('data-sop-url');
+            if (sopUrl && window.lastSearchResults?.sop?.sops) {
+                resultData = window.lastSearchResults.sop.sops.find(doc => doc.url === sopUrl);
+            }
+            sourceType = 'sop';
         }
 
         if (resultData) {
