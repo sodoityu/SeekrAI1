@@ -15,8 +15,12 @@ import os
 import sys
 import subprocess
 import json
+import re
+import glob as _glob
 import getpass
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, wait as futures_wait
+import time
 
 # Configure logging
 logging.basicConfig(
@@ -34,6 +38,629 @@ UNIFIED_SEARCH_API = 'http://localhost:5500'
 KERBEROS_REALM = os.environ.get('KERBEROS_REALM', 'IPA.REDHAT.COM')
 TOKENS_FILE = 'user_tokens.json'
 SEARCH_HISTORY_FILE = 'user_search_history.json'
+
+# ============================================================================
+# Claude AI + SFDC Configuration
+# ============================================================================
+CLAUDE_API_BASE = os.getenv("CLAUDE_API_BASE", "")
+CLAUDE_MODEL_ID = os.getenv("MODEL_ID", "claude-sonnet-4-6")
+CLAUDE_USER_KEY = os.getenv("USER_KEY") or os.getenv("AI_API_TOKEN", "")
+SFDC_API_BASE   = "https://access.redhat.com"
+GRAPHQL_API     = "https://graphql.redhat.com"
+CLOSED_STATUSES = {'closed', 'waiting on customer', 'waiting for customer', 'resolved'}
+_SYSTEM_CA      = "/etc/pki/tls/certs/ca-bundle.crt"
+
+# ============================================================================
+# Chai MCP Configuration (used for case follow-up chat)
+# ============================================================================
+CHAI_MCP_URL   = "https://ship-help-mcp-continuous-release-tooling--ship-help-bot.apps.gpc.ocp-hub.prod.psi.redhat.com/personas/rosa_engineering_public/mcp"
+CHAI_MCP_TOKEN = os.getenv("CHAI_MCP_TOKEN", "")
+
+def call_chai_ask_persona(question: str, timeout: int = 170, token: str = "") -> str:
+    """Call Chai MCP ask_persona tool and return plain text answer, or '' on failure."""
+    effective_token = token or CHAI_MCP_TOKEN
+    if not effective_token:
+        return ""
+    headers = {
+        "Authorization": f"Bearer {effective_token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+    }
+    try:
+        init_resp = requests.post(CHAI_MCP_URL, headers=headers, json={
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                       "clientInfo": {"name": "seekrai", "version": "1.0"}},
+        }, timeout=10, verify=True)
+        session_id = init_resp.headers.get("mcp-session-id", "")
+        if not session_id:
+            logger.warning("Chai MCP: no session ID returned from initialize")
+            return ""
+
+        headers["mcp-session-id"] = session_id
+        resp = requests.post(CHAI_MCP_URL, headers=headers, json={
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "ask_persona", "arguments": {"question": question}},
+        }, timeout=timeout, verify=True)
+
+        for line in resp.content.decode('utf-8').splitlines():
+            if line.startswith("data:"):
+                try:
+                    obj = json.loads(line[5:].strip())
+                    for item in obj.get("result", {}).get("content", []):
+                        if item.get("type") == "text":
+                            return item["text"]
+                except Exception:
+                    pass
+    except requests.exceptions.ConnectionError as e:
+        msg = str(e)
+        if "NameResolutionError" in msg or "Name or service not known" in msg:
+            logger.warning(f"Chai MCP: DNS resolution failed — VPN not connected? ({e})")
+        else:
+            logger.warning(f"Chai MCP connection error: {e}")
+    except requests.exceptions.Timeout as e:
+        logger.warning(f"Chai MCP timed out: {e}")
+    except Exception as e:
+        logger.warning(f"Chai MCP call failed: {e}")
+    return ""
+
+
+def _slack_to_html(text: str) -> str:
+    """Convert Slack-style markdown returned by Chai to basic HTML for SeekrAI."""
+    import html as html_mod
+    lines = text.split("\n")
+    out, in_ul = [], False
+
+    for line in lines:
+        stripped = line.strip()
+
+        if stripped.startswith("> "):
+            if in_ul:
+                out.append("</ul>"); in_ul = False
+            inner = stripped[2:]
+            inner = _apply_inline(inner)
+            out.append(f"<blockquote>{inner}</blockquote>")
+            continue
+
+        is_bullet = (
+            stripped.startswith("• ")
+            or stripped.startswith("- ")
+            or (stripped.startswith("* ") and not stripped.startswith("**"))
+        )
+        if is_bullet:
+            if not in_ul:
+                out.append("<ul>"); in_ul = True
+            inner = stripped[2:].strip()
+            inner = _apply_inline(inner)
+            out.append(f"<li>{inner}</li>")
+            continue
+
+        if in_ul:
+            out.append("</ul>"); in_ul = False
+
+        if not stripped:
+            out.append("")
+            continue
+
+        out.append(_apply_inline(stripped))
+
+    if in_ul:
+        out.append("</ul>")
+
+    result, buf = [], []
+    for segment in out:
+        if segment in ("", "<ul>") or segment.startswith("<ul>") or segment.startswith("</ul>") \
+                or segment.startswith("<blockquote>") or segment.startswith("<li>"):
+            if buf:
+                result.append(f"<p>{'<br>'.join(buf)}</p>")
+                buf = []
+            if segment:
+                result.append(segment)
+        else:
+            buf.append(segment)
+    if buf:
+        result.append(f"<p>{'<br>'.join(buf)}</p>")
+
+    return "\n".join(result)
+
+
+def _apply_inline(text: str) -> str:
+    """Apply inline Slack markdown: bold, italic, code."""
+    import html as html_mod
+    text = html_mod.escape(text)
+    text = re.sub(r'\*([^*\n]+)\*', r'<strong>\1</strong>', text)
+    text = re.sub(r'_([^_\n]+)_', r'<em>\1</em>', text)
+    text = re.sub(r'`([^`\n]+)`', r'<code>\1</code>', text)
+    return text
+
+
+# Lazy-import cache for ask_sre
+_asksre_search_fn  = None
+_asksre_get_doc_fn = None
+
+def _get_asksre_fns():
+    global _asksre_search_fn, _asksre_get_doc_fn
+    if _asksre_search_fn is None:
+        try:
+            _poetry_venv = subprocess.check_output(
+                ["poetry", "env", "info", "--path"],
+                cwd="/home/jayu/asksre/ask-sre",
+                text=True, stderr=subprocess.DEVNULL
+            ).strip()
+            _site_pkgs = _glob.glob(f"{_poetry_venv}/lib/python*/site-packages")
+            if _site_pkgs and _site_pkgs[0] not in sys.path:
+                sys.path.insert(0, _site_pkgs[0])
+            if "/home/jayu/asksre/ask-sre" not in sys.path:
+                sys.path.insert(0, "/home/jayu/asksre/ask-sre")
+        except Exception:
+            pass
+        from ask_sre.mcp.main import search_sre_docs, get_full_document
+        _asksre_search_fn  = search_sre_docs
+        _asksre_get_doc_fn = get_full_document
+    return _asksre_search_fn, _asksre_get_doc_fn
+
+def _get_ai_key():
+    try:
+        username = session.get('username')
+    except RuntimeError:
+        return CLAUDE_USER_KEY or ""
+    if username:
+        tokens = load_user_tokens(username)
+        user_key = tokens.get('ai_api_token', '')
+        if user_key:
+            return user_key
+    return CLAUDE_USER_KEY or ""
+
+def _get_ai_base():
+    try:
+        username = session.get('username')
+    except RuntimeError:
+        return CLAUDE_API_BASE
+    if username:
+        tokens = load_user_tokens(username)
+        user_url = tokens.get('ai_api_url', '')
+        if user_url:
+            return user_url
+    return CLAUDE_API_BASE
+
+def _get_ai_model():
+    try:
+        username = session.get('username')
+    except RuntimeError:
+        return CLAUDE_MODEL_ID
+    if username:
+        tokens = load_user_tokens(username)
+        user_model = tokens.get('ai_model_id', '')
+        if user_model:
+            return user_model
+    return CLAUDE_MODEL_ID
+
+def _claude_post_with_retry(url, headers, payload, timeout, verify, max_retries=3):
+    """POST to Claude API, retrying with backoff on 429 rate-limit responses."""
+    for attempt in range(max_retries):
+        try:
+            resp = requests.post(url, headers=headers, json=payload, timeout=timeout, verify=verify)
+        except requests.exceptions.Timeout:
+            raise
+        if resp.status_code == 429:
+            raw = resp.headers.get('Retry-After', '')
+            wait = min(int(raw) if raw.isdigit() else 5 * (attempt + 1), 30)
+            logger.warning(f"Claude API 429 rate limit, retrying in {wait}s (attempt {attempt + 1}/{max_retries})")
+            time.sleep(wait)
+            continue
+        resp.raise_for_status()
+        return resp
+    raise RuntimeError(f"Claude API still rate-limited after {max_retries} retries")
+
+
+def call_claude_api(prompt: str, system: str = "", messages: list = None,
+                    max_tokens: int = 2000, timeout=(10, 90),
+                    ai_base: str = None, ai_key: str = None, ai_model: str = None) -> str:
+    key = ai_key or _get_ai_key()
+    if not key:
+        return "<p><strong>Error:</strong> Claude API key not configured. Set USER_KEY or AI_API_TOKEN env var.</p>"
+    base = ai_base or _get_ai_base()
+    model = ai_model or _get_ai_model()
+    endpoint = f"{base}/sonnet/models/{model}:streamRawPredict"
+    _ca = os.getenv("REQUESTS_CA_BUNDLE") or (_SYSTEM_CA if os.path.exists(_SYSTEM_CA) else True)
+    payload = {
+        "anthropic_version": "vertex-2023-10-16",
+        "max_tokens": max_tokens,
+        "temperature": 0.2,
+    }
+    if system:
+        payload["system"] = system
+    if messages:
+        payload["messages"] = messages
+    else:
+        payload["messages"] = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
+    try:
+        resp = _claude_post_with_retry(
+            endpoint,
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+            payload=payload, timeout=timeout, verify=_ca
+        )
+        data = resp.json()
+        for block in data.get("content", []):
+            if block.get("type") == "text":
+                return block["text"]
+        return "<p>No response generated.</p>"
+    except requests.exceptions.Timeout:
+        return "__TIMEOUT__"
+    except Exception as e:
+        logger.error(f"Claude API error: {e}")
+        return f"<p><strong>Claude API error:</strong> {str(e)}</p>"
+
+
+from chat_agents import resolve_agent, build_agent_system, load_skill
+
+ALLOWED_COMMANDS = [
+    'oc ', 'oc\t', 'kubectl ', 'kubectl\t', 'rosa ',
+    'omc ', 'omc\t', 'osdctl ', 'osdctl\t', 'ocm ', 'ocm\t',
+]
+
+def is_command_allowed(command: str) -> bool:
+    cmd = command.strip()
+    return any(cmd.startswith(prefix) for prefix in ALLOWED_COMMANDS)
+
+
+def execute_local_command(command: str) -> str:
+    if not is_command_allowed(command):
+        return f"Error: Only oc, kubectl, rosa, omc, osdctl, and ocm commands are allowed. Rejected: {command!r}"
+    try:
+        result = subprocess.run(
+            command, shell=True, capture_output=True, text=True, timeout=30
+        )
+        output = (result.stdout or '') + (result.stderr or '')
+        return output[:3000] if output else "(no output)"
+    except subprocess.TimeoutExpired:
+        return "Error: Command timed out after 30 seconds"
+    except Exception as e:
+        return f"Error executing command: {str(e)}"
+
+def call_claude_with_tools(prompt: str, system: str = "", messages: list = None,
+                           max_tokens: int = 4000, timeout=(10, 180),
+                           ai_base: str = None, ai_key: str = None, ai_model: str = None) -> str:
+    """Agentic loop: Claude calls run_command tool until it reaches end_turn."""
+    key = ai_key or _get_ai_key()
+    if not key:
+        return "<p><strong>Error:</strong> Claude API key not configured.</p>"
+    base = ai_base or _get_ai_base()
+    model = ai_model or _get_ai_model()
+    endpoint = f"{base}/sonnet/models/{model}:streamRawPredict"
+    _ca = os.getenv("REQUESTS_CA_BUNDLE") or (_SYSTEM_CA if os.path.exists(_SYSTEM_CA) else True)
+    loop_deadline = time.time() + 300
+    tools = [{
+        "name": "run_command",
+        "description": "Run a CLI command on the local machine. Allowed commands: oc, kubectl, rosa, omc, osdctl, ocm.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "The oc/kubectl/rosa command to execute"
+                }
+            },
+            "required": ["command"]
+        }
+    }]
+    if messages is None:
+        messages = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
+    for _ in range(10):
+        if time.time() > loop_deadline:
+            return "<p><strong>Investigation timed out</strong> — the cluster health check took too long.</p>"
+        payload = {
+            "anthropic_version": "vertex-2023-10-16",
+            "max_tokens": max_tokens,
+            "temperature": 0.2,
+            "tools": tools,
+            "tool_choice": {"type": "auto"},
+        }
+        if system:
+            payload["system"] = system
+        payload["messages"] = messages
+        try:
+            resp = _claude_post_with_retry(
+                endpoint,
+                headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+                payload=payload, timeout=timeout, verify=_ca
+            )
+            data = resp.json()
+        except requests.exceptions.Timeout:
+            return "__TIMEOUT__"
+        except Exception as e:
+            logger.error(f"Claude tools API error: {e}")
+            return f"<p><strong>Claude API error:</strong> {str(e)}</p>"
+        stop_reason = data.get("stop_reason", "")
+        content_blocks = data.get("content", [])
+        messages.append({"role": "assistant", "content": content_blocks})
+        if stop_reason == "end_turn":
+            for block in content_blocks:
+                if block.get("type") == "text":
+                    return block["text"]
+            return "<p>Investigation complete.</p>"
+        elif stop_reason == "tool_use":
+            tool_results = []
+            for block in content_blocks:
+                if block.get("type") == "tool_use":
+                    command = block.get("input", {}).get("command", "")
+                    logger.info(f"SRE tool use: {command}")
+                    output = execute_local_command(command)
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block["id"],
+                        "content": output
+                    })
+            messages.append({"role": "user", "content": tool_results})
+        else:
+            for block in content_blocks:
+                if block.get("type") == "text":
+                    return block["text"]
+            return f"<p>Stopped with reason: {stop_reason}</p>"
+    return "<p>Investigation reached maximum turns without a final conclusion.</p>"
+
+
+def exchange_offline_token(offline_token: str) -> str:
+    try:
+        r = requests.post(
+            'https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token',
+            data={'grant_type': 'refresh_token', 'client_id': 'rhsm-api', 'refresh_token': offline_token},
+            timeout=10
+        )
+        if r.status_code == 200:
+            return r.json().get('access_token', '')
+    except Exception as e:
+        logger.warning(f"Token exchange failed: {e}")
+    return ''
+
+def fetch_sfdc_case_details_full(case_number: str, sfdc_token: str) -> dict:
+    access_token = exchange_offline_token(sfdc_token) if sfdc_token else ''
+    if not access_token:
+        logger.warning("Could not obtain access token for case fetch")
+        return {}
+
+    import html as _html
+    gql_headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        "apollographql-client-name": "seekrai",
+        "apollographql-client-version": "2.0",
+    }
+    query = """
+    query GetCaseAndComments($caseNumber: String, $first: Int, $after: String) {
+      redhat_support_uiapi {
+        query {
+          RedHatSupportCase(where: { CaseNumber__c: { eq: $caseNumber } }) {
+            edges {
+              node {
+                Id
+                CaseNumber__c { value }
+                Subject { value }
+                Status { value }
+                Priority { value }
+                Description { value }
+                Product {
+                  Id
+                  Name { value }
+                  ParentProduct__r { Name { value } }
+                }
+                CreatedDate { value }
+                CaseComments__r(first: $first, after: $after, orderBy: { CreatedDate: { order: DESC } }) {
+                  edges {
+                    node {
+                      Id
+                      Body__c { value }
+                      LastModifiedByName__c { value }
+                      IsCustomer__c { value }
+                      CreatedDate { value }
+                    }
+                    cursor
+                  }
+                  pageInfo { hasNextPage endCursor }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    """
+
+    def _val(obj, *keys):
+        for k in keys:
+            obj = (obj or {}).get(k) or {}
+        return obj.get('value', '') if isinstance(obj, dict) else ''
+
+    def _clean_html(raw: str) -> str:
+        text = _html.unescape(raw or '')
+        text = re.sub(r'<[^>]+>', ' ', text)
+        return re.sub(r'\s+', ' ', text).strip()
+
+    try:
+        resp = requests.post(
+            GRAPHQL_API,
+            headers=gql_headers,
+            json={"query": query, "variables": {"caseNumber": case_number, "first": 20, "after": None}},
+            timeout=20,
+        )
+        resp.raise_for_status()
+        edges = (resp.json().get('data', {})
+                 .get('redhat_support_uiapi', {})
+                 .get('query', {})
+                 .get('RedHatSupportCase', {})
+                 .get('edges', []))
+        if not edges:
+            logger.warning(f"GraphQL: no case found for {case_number}, falling back to Hydra REST API")
+            return _fetch_sfdc_case_hydra(case_number, access_token)
+
+        node = edges[0]['node']
+
+        prod_node = node.get('Product') or {}
+        product_name = _val(prod_node, 'Name')
+        parent = (prod_node.get('ParentProduct__r') or {})
+        parent_name = (parent.get('Name') or {}).get('value', '')
+        if parent_name and parent_name != product_name:
+            product_name = f"{parent_name} / {product_name}"
+
+        comments = []
+        for edge in node.get('CaseComments__r', {}).get('edges', []):
+            c = edge['node']
+            is_customer = (_val(c, 'IsCustomer__c') or False)
+            comments.append({
+                'commentBody': _clean_html(_val(c, 'Body__c')),
+                'author':      _val(c, 'LastModifiedByName__c') or 'Unknown',
+                'isPublic':    bool(is_customer),
+                'createdDate': _val(c, 'CreatedDate'),
+            })
+        comments.reverse()
+
+        return {
+            'subject':     _val(node, 'Subject'),
+            'description': _clean_html(_val(node, 'Description')),
+            'status':      _val(node, 'Status'),
+            'severity':    _val(node, 'Priority'),
+            'product':     product_name,
+            'createdDate': _val(node, 'CreatedDate'),
+            '_ep_comments': comments,
+        }
+    except Exception as e:
+        logger.error(f"GraphQL case fetch error: {e}, falling back to Hydra REST API")
+        return _fetch_sfdc_case_hydra(case_number, access_token)
+
+
+def _fetch_sfdc_case_hydra(case_number: str, access_token: str) -> dict:
+    """Fallback: fetch case details via the old Hydra REST API."""
+    import html as _html
+
+    def _clean_html(raw: str) -> str:
+        text = _html.unescape(raw or '')
+        text = re.sub(r'<[^>]+>', ' ', text)
+        return re.sub(r'\s+', ' ', text).strip()
+
+    headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+    result = {}
+    try:
+        r = requests.get(f"{SFDC_API_BASE}/hydra/rest/cases/{case_number}", headers=headers, timeout=15)
+        r.raise_for_status()
+        case_data = r.json()
+        product_obj = case_data.get('product', {}) or {}
+        product_name = product_obj.get('name', '') if isinstance(product_obj, dict) else str(product_obj)
+        result = {
+            'subject':     case_data.get('subject', case_data.get('summary', '')),
+            'description': _clean_html(case_data.get('description', case_data.get('caseDescription', ''))),
+            'status':      case_data.get('status', ''),
+            'severity':    case_data.get('severity', case_data.get('priority', '')),
+            'product':     product_name,
+            'createdDate': case_data.get('createdDate', case_data.get('created_date', '')),
+        }
+    except Exception as e:
+        logger.warning(f"Hydra REST case fetch error: {e}")
+
+    comments = []
+    for ep in [f"/hydra/rest/cases/{case_number}/comments",
+               f"/hydra/rest/cases/{case_number}/notes"]:
+        try:
+            r = requests.get(f"{SFDC_API_BASE}{ep}", headers=headers, timeout=15)
+            if r.status_code == 200:
+                raw = r.json()
+                items = raw if isinstance(raw, list) else raw.get('comments', raw.get('body', []))
+                if not isinstance(items, list):
+                    items = [items]
+                for c in items:
+                    if isinstance(c, str):
+                        body_txt = _clean_html(c)
+                        comments.append({'commentBody': body_txt, 'author': 'Unknown', 'isPublic': True})
+                    elif isinstance(c, dict):
+                        body_txt = _clean_html(
+                            c.get('commentBody') or c.get('body') or c.get('text') or c.get('caseComment', '')
+                        )
+                        author = c.get('author', c.get('createdByName', 'Unknown'))
+                        is_public = c.get('public', c.get('isPublic', True))
+                        comments.append({'commentBody': body_txt, 'author': author, 'isPublic': bool(is_public)})
+        except Exception as e:
+            logger.warning(f"Hydra REST {ep} fetch error: {e}")
+
+    if comments:
+        result['_ep_comments'] = comments
+    return result
+
+
+def extract_linked_resources(description: str, comments_text: str) -> dict:
+    all_text = (description or '') + '\n' + (comments_text or '')
+    resources = {'kcs': [], 'jira': [], 'bugzilla': [], 'docs': []}
+    seen_kcs: set = set()
+    for m in re.finditer(r'https?://access\.redhat\.com/(?:solutions|articles)/\d+[^\s\)\"\'<>]*', all_text, re.IGNORECASE):
+        url = m.group(0).rstrip('.,;)')
+        if url not in seen_kcs:
+            seen_kcs.add(url); resources['kcs'].append(url)
+    seen_jira: set = set()
+    for m in re.finditer(r'\b([A-Z]{2,10}-\d+)\b', all_text):
+        key = m.group(1)
+        if key not in seen_jira:
+            seen_jira.add(key); resources['jira'].append({'key': key, 'url': f'https://redhat.atlassian.net/browse/{key}'})
+    seen_bz: set = set()
+    for m in re.finditer(r'https?://bugzilla\.redhat\.com/(?:show_bug\.cgi\?id=)?(\d+)', all_text, re.IGNORECASE):
+        bug_id = m.group(1)
+        if bug_id not in seen_bz:
+            seen_bz.add(bug_id); resources['bugzilla'].append({'id': bug_id, 'url': m.group(0).rstrip('.,;)')})
+    seen_docs: set = set()
+    for m in re.finditer(r'https?://(?:docs\.openshift\.com|docs\.redhat\.com|access\.redhat\.com/documentation)[^\s\)\"\'<>]+', all_text, re.IGNORECASE):
+        url = m.group(0).rstrip('.,;)')
+        if url not in seen_docs:
+            seen_docs.add(url); resources['docs'].append(url)
+    return resources
+
+def _chat_search_sop(question: str) -> tuple:
+    try:
+        search_fn, get_doc_fn = _get_asksre_fns()
+        seen = {}
+        for r in search_fn(problem_statement=question, max_results=15):
+            if r.get("source") != "local_ops_sop": continue
+            fp = r.get("file_path", "")
+            if not fp: continue
+            score = r.get("similarity", 0)
+            if fp not in seen or score > seen[fp]["score"]:
+                seen[fp] = {"score": score, "title": r.get("title", fp)}
+        if not seen:
+            return "", []
+        top_docs = sorted(seen.items(), key=lambda x: x[1]["score"], reverse=True)[:2]
+        parts, refs = [], []
+        for fp, info in top_docs:
+            gh_url = f"https://github.com/openshift/ops-sop/blob/master/{fp}"
+            try:
+                full = get_doc_fn(document_id=fp, source="local_ops_sop")
+                content = (full.get("full_content") or "")[:4000]
+            except Exception:
+                content = ""
+            if content:
+                parts.append(f"### SOP: {info['title']}\nFile: {fp}\n\n{content}")
+                refs.append({"title": info['title'], "url": gh_url, "type": "local_ops_sop"})
+        return "\n\n---\n\n".join(parts), refs
+    except Exception as e:
+        logger.warning(f"Chat SOP search failed: {e}")
+        return "", []
+
+def _chat_search_kcs(question: str, sfdc_token: str) -> tuple:
+    try:
+        headers = {"Authorization": f"Bearer {sfdc_token}", "Content-Type": "application/json"}
+        r = requests.get(
+            f"{SFDC_API_BASE}/hydra/rest/search/v2/kcs",
+            headers=headers,
+            params={"q": question, "rows": 3},
+            timeout=15
+        )
+        articles = r.json().get("articles", []) if r.status_code == 200 else []
+        parts, refs = [], []
+        for a in articles:
+            title = a.get("title", "KCS Article")
+            url   = a.get("url") or a.get("view_uri", "")
+            if title and title != "No title":
+                parts.append(f"### KCS: {title}")
+                refs.append({"title": title, "url": url, "type": "kcs"})
+        return "\n\n".join(parts), refs
+    except Exception as e:
+        logger.warning(f"Chat KCS search failed: {e}")
+        return "", []
 
 # ============================================================================
 # PERSISTENT TOKEN STORAGE
@@ -1586,6 +2213,471 @@ def recent_searches_page():
     if 'username' not in session:
         return redirect('/seekr/login')
     return send_file('src/seekrai_recentsearch.html')
+
+# ----------------------------------------------------------------------------
+# AI CONFIG SETTINGS
+# ----------------------------------------------------------------------------
+
+@app.route('/api/settings/ai-config', methods=['GET', 'POST'])
+def ai_config_settings():
+    """API endpoint to save/retrieve AI API configuration"""
+    if 'username' not in session:
+        return jsonify({'error': 'Not authenticated'}), 401
+    username = session['username']
+
+    if request.method == 'POST':
+        data = request.get_json()
+        ai_url = data.get('ai_url', '').strip()
+        ai_token = data.get('ai_token', '').strip()
+        ai_model = data.get('ai_model', '').strip()
+
+        if not ai_url:
+            return jsonify({'success': False, 'message': 'API URL is required'}), 400
+
+        update_user_token(username, 'ai_api_url', ai_url)
+        if ai_token:
+            update_user_token(username, 'ai_api_token', ai_token)
+        if ai_model:
+            update_user_token(username, 'ai_model_id', ai_model)
+        logger.info(f"AI config saved for user {username}")
+        return jsonify({'success': True, 'message': 'AI configuration saved successfully'})
+    else:
+        tokens = load_user_tokens(username)
+        return jsonify({
+            'ai_url': tokens.get('ai_api_url', CLAUDE_API_BASE),
+            'ai_model': tokens.get('ai_model_id', CLAUDE_MODEL_ID),
+            'has_token': bool(tokens.get('ai_api_token') or CLAUDE_USER_KEY)
+        })
+
+
+@app.route('/api/settings/test-ai-config', methods=['POST'])
+def test_ai_config():
+    """Test AI API connection with given URL and token"""
+    if 'username' not in session:
+        return jsonify({'error': 'Not authenticated'}), 401
+
+    data = request.get_json()
+    ai_url = (data.get('ai_url', '') or '').strip() or CLAUDE_API_BASE
+    username = session['username']
+    tokens = load_user_tokens(username)
+    ai_token = (data.get('ai_token', '') or '').strip() or tokens.get('ai_api_token', '') or CLAUDE_USER_KEY
+    ai_model = (data.get('ai_model', '') or '').strip() or tokens.get('ai_model_id', '') or CLAUDE_MODEL_ID
+
+    if not ai_token:
+        return jsonify({'valid': False, 'message': '⚠️ No API token configured'}), 400
+
+    try:
+        endpoint = f"{ai_url}/sonnet/models/{ai_model}:streamRawPredict"
+        headers = {
+            'Authorization': f'Bearer {ai_token}',
+            'Content-Type': 'application/json',
+        }
+        payload = {
+            'anthropic_version': 'vertex-2023-10-16',
+            'max_tokens': 7,
+            'temperature': 0,
+            'messages': [
+                {'role': 'user', 'content': [{'type': 'text', 'text': 'Say hi'}]}
+            ]
+        }
+        verify = _SYSTEM_CA if os.path.exists(_SYSTEM_CA) else True
+        resp = requests.post(endpoint, headers=headers, json=payload, timeout=20, verify=verify)
+        if resp.status_code == 200:
+            return jsonify({'valid': True, 'message': '✅ Connection successful — AI API is reachable and authenticated'})
+        elif resp.status_code in (401, 403):
+            return jsonify({'valid': False, 'message': '❌ Authentication failed — check your API token'})
+        elif resp.status_code == 400:
+            return jsonify({'valid': True, 'message': f'✅ API is reachable (HTTP 400 — endpoint responded)'})
+        else:
+            body = resp.text[:200] if resp.text else ''
+            return jsonify({'valid': False, 'message': f'⚠️ Unexpected response: HTTP {resp.status_code} — {body}'})
+    except requests.exceptions.Timeout:
+        return jsonify({'valid': False, 'message': '❌ Connection timed out — check the API URL'})
+    except Exception as e:
+        return jsonify({'valid': False, 'message': f'❌ Connection failed: {str(e)}'})
+
+
+# ----------------------------------------------------------------------------
+# CHAI AI SETTINGS
+# ----------------------------------------------------------------------------
+
+@app.route('/api/settings/chai-config', methods=['GET', 'POST'])
+def chai_config_settings():
+    """Save/retrieve Chai MCP token configuration per user."""
+    if 'username' not in session:
+        return jsonify({'error': 'Not authenticated'}), 401
+    username = session['username']
+
+    if request.method == 'POST':
+        data = request.get_json()
+        token = data.get('chai_token', '').strip()
+        expiry = data.get('chai_token_expiry', '').strip()
+        if not token:
+            return jsonify({'success': False, 'message': 'Token is required'}), 400
+        tokens = load_user_tokens(username)
+        tokens['chai_mcp_token'] = token
+        if expiry:
+            tokens['chai_mcp_token_expiry'] = expiry
+        save_user_tokens(username, tokens)
+        logger.info(f"Chai MCP token saved for user {username}")
+        return jsonify({'success': True, 'message': 'Chai AI token saved successfully'})
+    else:
+        tokens = load_user_tokens(username)
+        return jsonify({
+            'has_token': bool(tokens.get('chai_mcp_token') or CHAI_MCP_TOKEN),
+            'expiry': tokens.get('chai_mcp_token_expiry', ''),
+        })
+
+
+@app.route('/api/settings/test-chai-config', methods=['POST'])
+def test_chai_config():
+    """Test Chai MCP connectivity with the given token."""
+    if 'username' not in session:
+        return jsonify({'error': 'Not authenticated'}), 401
+    username = session['username']
+    data = request.get_json()
+    token = (data.get('chai_token', '') or '').strip()
+    if not token:
+        tokens = load_user_tokens(username)
+        token = tokens.get('chai_mcp_token', '') or CHAI_MCP_TOKEN
+    if not token:
+        return jsonify({'valid': False, 'message': '⚠️ No Chai token configured'}), 400
+
+    try:
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        }
+        resp = requests.post(CHAI_MCP_URL, headers=headers, json={
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                       "clientInfo": {"name": "seekrai-test", "version": "1.0"}},
+        }, timeout=10, verify=True)
+        session_id = resp.headers.get("mcp-session-id", "")
+        if session_id:
+            return jsonify({'valid': True, 'message': '✅ Chai AI is reachable and token is valid'})
+        try:
+            body = resp.json()
+            if body.get("error"):
+                return jsonify({'valid': False, 'message': f'❌ Chai error: {body["error"].get("message", "unknown")}'})
+        except Exception:
+            pass
+        return jsonify({'valid': False, 'message': f'⚠️ Unexpected response (HTTP {resp.status_code}) — check VPN and token'})
+    except requests.exceptions.Timeout:
+        return jsonify({'valid': False, 'message': '❌ Connection timed out — are you on VPN?'})
+    except Exception as e:
+        return jsonify({'valid': False, 'message': f'❌ Connection failed: {str(e)}'})
+
+
+# ----------------------------------------------------------------------------
+# SLACK DEFAULT CHANNELS SETTINGS
+# ----------------------------------------------------------------------------
+
+_DEFAULT_SLACK_CHANNELS = [
+    'forum-rosa-support', 'openshift-sre', 'team-sre', 'sre-alerts',
+    'sre-general', 'rosa-sre', 'osd-sre', 'forum-managed-openshift', 'ask-sre'
+]
+
+@app.route('/api/settings/slack-channels', methods=['GET', 'POST'])
+def slack_channels_settings():
+    """API endpoint to save/retrieve the list of default Slack channels"""
+    if 'username' not in session:
+        return jsonify({'error': 'Not authenticated'}), 401
+    username = session['username']
+
+    if request.method == 'POST':
+        data = request.get_json()
+        channels = data.get('channels', [])
+        if not isinstance(channels, list):
+            return jsonify({'success': False, 'message': 'channels must be a list'}), 400
+        channels = [str(c).strip().lstrip('#') for c in channels if str(c).strip()]
+        update_user_token(username, 'default_slack_channels', channels)
+        logger.info(f"Slack channels saved for user {username}: {channels}")
+        return jsonify({'success': True, 'message': f'Saved {len(channels)} channel(s) successfully'})
+    else:
+        tokens = load_user_tokens(username)
+        channels = tokens.get('default_slack_channels', None)
+        if channels is None:
+            channels = _DEFAULT_SLACK_CHANNELS
+        return jsonify({'channels': channels})
+
+
+# ============================================================================
+# AI CASE SUMMARY + CHAT ENDPOINTS
+# ============================================================================
+
+@app.route('/api/ai/case-summary', methods=['POST'])
+def ai_case_summary():
+    """Generate AI summary for an SFDC case using Claude + ask-sre RAG."""
+    if 'username' not in session:
+        return jsonify({'error': 'Not authenticated'}), 401
+    try:
+        body        = request.get_json()
+        case_number = body.get('case_number', '').strip()
+        case_data   = body.get('case_data', {})
+        if not case_number:
+            return jsonify({'error': 'case_number is required'}), 400
+
+        username    = session.get('username', '')
+        user_tokens = load_user_tokens(username)
+        sfdc_token  = user_tokens.get('redhat_token', '') or os.getenv('RH_API_OFFLINE_TOKEN', '')
+
+        details  = fetch_sfdc_case_details_full(case_number, sfdc_token) if sfdc_token else {}
+        subject  = details.get('subject',         case_data.get('summary', 'Unknown'))
+        desc     = details.get('description', '') or case_data.get('description', '') or ''
+        status   = details.get('status',          case_data.get('status', ''))
+        severity = details.get('severity',         case_data.get('severity', ''))
+        product  = details.get('product',          case_data.get('product', ''))
+        created  = details.get('createdDate',      details.get('created_date', ''))
+
+        def _extract_comments(raw):
+            if isinstance(raw, list): return raw
+            if isinstance(raw, dict):
+                for k in ('comment', 'comments', 'data', 'results', 'items', 'notes', 'workNotes'):
+                    v = raw.get(k)
+                    if isinstance(v, list) and v: return v
+            return []
+
+        comment_list = []
+        for k in list(details.keys()):
+            if k.startswith('_ep_'):
+                comment_list += _extract_comments(details[k])
+        if not comment_list:
+            comment_list = _extract_comments(details.get('comments', {}))
+
+        comments_text = ''
+        for c in comment_list[:15]:
+            body_txt = str(c.get('commentBody') or c.get('body') or c.get('text') or '')[:3000].strip()
+            author = c.get('author', c.get('createdByName', 'Unknown'))
+            is_public = c.get('public', c.get('isPublic', True))
+            ctype = 'Customer' if is_public else 'SRE/Internal'
+            if body_txt:
+                comments_text += f"\n[{ctype} - {author}]:\n{body_txt}\n"
+
+        linked_resources = extract_linked_resources(desc, comments_text)
+        is_closed = status.lower().strip() in CLOSED_STATUSES
+
+        def lr_text(lr):
+            parts = []
+            if lr['kcs']:      parts.append("KCS: " + ' | '.join(lr['kcs'][:5]))
+            if lr['jira']:     parts.append("Jira: " + ', '.join(j['key'] for j in lr['jira'][:6]))
+            if lr['bugzilla']: parts.append("Bugs: " + ', '.join(f"BZ-{b['id']}" for b in lr['bugzilla'][:5]))
+            if lr['docs']:     parts.append("Docs: " + ' | '.join(lr['docs'][:3]))
+            return '\n'.join(parts) if parts else '(none detected)'
+
+        mode_label = 'CLOSED — post-mortem summary' if is_closed else f'OPEN ({status}) — analysis & suggestions'
+
+        prompt = f"""You are an expert Red Hat SRE analyst. Case is {mode_label}.
+Produce a structured summary in clean HTML only. No markdown, no code fences, no inline style attributes, no introductory tables or headers before the first <h3>.
+
+CASE: {case_number} | {status} | Severity {severity} | {product}
+SUBJECT: {subject}
+CREATED: {created}
+
+CONVERSATION THREAD (customer ↔ SRE):
+{comments_text if comments_text else '(no comments available)'}
+
+RESOURCES LINKED IN THIS CASE:
+{lr_text(linked_resources)}
+
+CRITICAL INSTRUCTIONS:
+- Preserve verbatim CLI commands exactly as written — wrap them in <pre><code> blocks. Do not paraphrase or shorten commands.
+- Include the full customer ↔ SRE Q&A exchanges from the conversation thread.
+- Mention specific flags, registry names, cluster names, version numbers exactly as they appear.
+
+Produce these HTML sections using <h3> headings:
+
+<h3>Case Overview</h3> 2-3 sentence summary of the issue and outcome/current state.
+
+<h3>Key Error Messages / Commands Run</h3> Exact error messages, log lines, and CLI commands, each in its own <pre><code> block. If none, write <p>(none found)</p>.
+
+<h3>Problem Analysis</h3> Technical facts as <ul><li>. Include specific values (error codes, components, versions, flags).
+
+<h3>Customer Questions &amp; Engineer Answers</h3> <ul><li> for each Q&A pair from the conversation thread.
+
+<h3>Root Cause &amp; Resolution</h3> <ul><li> with <strong>Confirmed</strong>/<em>Probable</em> labels.
+{('<h3>Suggested Next Steps</h3> Actionable <ol><li> items for the SRE team based on similar cases and SOPs.' if not is_closed else '')}
+
+<h3>Linked Resources</h3> <ul> with every KCS article, Jira ticket, Bugzilla bug found in the case.
+
+<h3>Key Learnings</h3> What to watch for in similar cases. <ul><li>.
+
+Use <code> for inline commands/values, <strong> for emphasis. Never invent details not present in the case."""
+
+        html = call_claude_api(prompt, max_tokens=3500)
+        if html == "__TIMEOUT__":
+            return jsonify({'timeout': True, 'html': ''}), 200
+
+        html = re.sub(r'^```+\w*\s*', '', html.strip(), flags=re.MULTILINE)
+        html = re.sub(r'```+\s*$', '', html.strip(), flags=re.MULTILINE)
+        html = re.sub(r'\s+style="[^"]*"', '', html)
+
+        return jsonify({
+            'mode': 'closed' if is_closed else 'open',
+            'status': status,
+            'linked_resources': linked_resources,
+            'html': html,
+            'case_number': case_number,
+        })
+    except Exception as e:
+        logger.error(f"ai_case_summary error: {e}")
+        import traceback; traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+def _call_claude_for_chat(question, case_number, case_summary, messages, sfdc_token,
+                          ai_base="", ai_key="", ai_model=""):
+    """Run the SOP+KCS search and Claude call for chat. Returns (answer_html, refs)."""
+    sop_ctx, sop_refs = "", []
+    kcs_ctx, kcs_refs = "", []
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        sop_f = ex.submit(_chat_search_sop, question)
+        kcs_f = ex.submit(_chat_search_kcs, question, sfdc_token)
+        try: sop_ctx, sop_refs = sop_f.result(timeout=20)
+        except Exception as e: logger.warning(f"SOP search timeout: {e}")
+        try: kcs_ctx, kcs_refs = kcs_f.result(timeout=20)
+        except Exception as e: logger.warning(f"KCS search timeout: {e}")
+
+    summary_text = re.sub(r'<[^>]+>', ' ', case_summary)
+    summary_text = re.sub(r'\s+', ' ', summary_text).strip()[:2500]
+
+    system_parts = [f"You are an expert Red Hat SRE analyst helping with SFDC case {case_number}."]
+    if summary_text: system_parts.append(f"\nCASE ANALYSIS CONTEXT:\n{summary_text}")
+    if sop_ctx:      system_parts.append(f"\nRELEVANT SRE SOPs:\n{sop_ctx}")
+    if kcs_ctx:      system_parts.append(f"\nRELEVANT KCS ARTICLES:\n{kcs_ctx}")
+    system_parts.append(
+        "\nAnswer the user's question using case context and SOP/KCS docs above. "
+        "Be concise and technical. Use HTML formatting (<p>, <ul>, <li>, <code>, <strong>) — no markdown."
+    )
+    system_ctx = "\n".join(p for p in system_parts if p)
+
+    api_messages = []
+    for msg in messages:
+        api_messages.append({"role": msg['role'], "content": [{"type": "text", "text": str(msg['content'])}]})
+    api_messages.append({"role": "user", "content": [{"type": "text", "text": question}]})
+
+    agent = resolve_agent(question)
+    if agent:
+        extra_ctx = "\n\n".join(p for p in [
+            f"RELEVANT SRE SOPs:\n{sop_ctx}" if sop_ctx else "",
+            f"RELEVANT KCS ARTICLES:\n{kcs_ctx}" if kcs_ctx else "",
+        ] if p)
+        agent_system = build_agent_system(agent, case_number=case_number, extra_ctx=extra_ctx)
+        if agent_system:
+            answer = call_claude_with_tools("", system=agent_system, messages=api_messages,
+                                            max_tokens=agent["max_tokens"],
+                                            ai_base=ai_base, ai_key=ai_key, ai_model=ai_model)
+        else:
+            answer = call_claude_api("", system=system_ctx, messages=api_messages, max_tokens=2500,
+                                     timeout=(10, 90), ai_base=ai_base, ai_key=ai_key, ai_model=ai_model)
+    else:
+        answer = call_claude_api("", system=system_ctx, messages=api_messages, max_tokens=2500,
+                                 timeout=(10, 90), ai_base=ai_base, ai_key=ai_key, ai_model=ai_model)
+
+    return answer, sop_refs + kcs_refs
+
+
+@app.route('/api/ai/case-chat', methods=['POST'])
+def ai_case_chat():
+    """Follow-up chat — calls Chai AI and Claude simultaneously, returns both answers."""
+    if 'username' not in session:
+        return jsonify({'error': 'Not authenticated'}), 401
+    try:
+        body         = request.get_json()
+        case_number  = body.get('case_number', '')
+        case_summary = body.get('case_summary', '')
+        messages     = body.get('messages', [])
+        question     = body.get('question', '').strip()
+        if not question:
+            return jsonify({'error': 'question is required'}), 400
+
+        username    = session.get('username', '')
+        user_tokens = load_user_tokens(username)
+        sfdc_token  = user_tokens.get('redhat_token', '') or os.getenv('RH_API_OFFLINE_TOKEN', '')
+        chai_token  = user_tokens.get('chai_mcp_token', '') or CHAI_MCP_TOKEN
+        sources     = body.get('sources', ['claude'])
+        # Capture AI config in request context — session is unavailable inside threads
+        ai_base  = _get_ai_base()
+        ai_key   = _get_ai_key()
+        ai_model = _get_ai_model()
+
+        use_chai   = 'chai'   in sources
+        use_claude = 'claude' in sources
+
+        chai_answer   = ""
+        claude_answer = ""
+        refs          = []
+
+        def _chai_question_with_context(q: str, history: list, max_turns: int = 3) -> str:
+            recent = history[-(max_turns * 2):]
+            if not recent:
+                return q
+            lines = ["[Previous conversation context]"]
+            for msg in recent:
+                role  = "User" if msg.get("role") == "user" else "Assistant"
+                lines.append(f"{role}: {msg.get('content', '')[:500]}")
+            lines.append(f"\n[Current question]\nUser: {q}")
+            return "\n".join(lines)
+
+        chai_question = _chai_question_with_context(question, messages)
+
+        futures = {}
+        _ex = ThreadPoolExecutor(max_workers=2)
+        if use_chai:
+            futures['chai']   = _ex.submit(call_chai_ask_persona, chai_question, 210, chai_token)
+        if use_claude:
+            futures['claude'] = _ex.submit(_call_claude_for_chat, question, case_number, case_summary, messages, sfdc_token,
+                                           ai_base, ai_key, ai_model)
+
+        if futures:
+            futures_wait(list(futures.values()), timeout=225)
+        _ex.shutdown(wait=False)
+
+        if 'chai' in futures:
+            f = futures['chai']
+            if f.done():
+                try:
+                    chai_raw = f.result()
+                    if chai_raw:
+                        chai_answer = _slack_to_html(chai_raw)
+                except Exception as e:
+                    logger.warning(f"Chai call failed: {e}")
+            else:
+                logger.warning("Chai call timed out (>115s)")
+
+        if 'claude' in futures:
+            f = futures['claude']
+            if f.done():
+                try:
+                    claude_answer, refs = f.result()
+                    if claude_answer == "__TIMEOUT__":
+                        claude_answer = ""
+                except Exception as e:
+                    logger.warning(f"Claude call failed: {e}")
+            else:
+                logger.warning("Claude call timed out (>115s)")
+
+        if use_chai and not chai_answer and use_claude and not claude_answer:
+            reason = f"Chai: {'done but empty' if futures.get('chai',None) and futures['chai'].done() else 'timed out'}, Claude: {'done but empty/timeout' if futures.get('claude',None) and futures['claude'].done() else 'timed out'}"
+            logger.error(f"ai_case_chat: all sources empty — {reason}")
+            return jsonify({'error': f'Both Chai and Claude failed ({reason}). Check VPN / server logs.'}), 200
+        if use_chai and not use_claude and not chai_answer:
+            return jsonify({'error': 'Chai AI did not respond. Check VPN and token.'}), 200
+        if use_claude and not use_chai and not claude_answer:
+            return jsonify({'error': 'Claude did not respond. Check API connectivity / VPN.'}), 200
+
+        logger.info(f"ai_case_chat: chai={'ok' if chai_answer else '-'} claude={'ok' if claude_answer else '-'} sources={sources} case={case_number}")
+        return jsonify({
+            'chai_answer':   chai_answer,
+            'claude_answer': claude_answer,
+            'refs':          refs,
+        })
+    except Exception as e:
+        logger.error(f"ai_case_chat error: {e}")
+        import traceback; traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
 
 # ============================================================================
 # HEALTH CHECK

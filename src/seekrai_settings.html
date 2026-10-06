@@ -598,11 +598,305 @@
                 </div>
             </div>
 
+            <!-- AI Configuration Section -->
+            <div class="settings-section" style="margin-top:2rem;">
+                <div class="section-header">
+                    <h2 class="section-title">AI Configuration</h2>
+                    <p class="section-description">Configure the AI API endpoint and token used for intelligent search and case investigation</p>
+                </div>
+                <div class="settings-card" id="ai-config-section">
+                    <div class="card-header">
+                        <div class="card-title-group">
+                            <h3 class="card-title">AI API Settings</h3>
+                        </div>
+                        <p class="card-description">
+                            The AI API is used for intelligent search assistance, case investigation with oc commands, and case summaries.
+                        </p>
+                    </div>
+                    <div class="card-body">
+                        <div class="form-group">
+                            <label for="aiApiUrl" class="form-label">AI API URL</label>
+                            <input type="text" id="aiApiUrl" name="aiApiUrl" class="form-input"
+                                placeholder="https://..." />
+                            <p class="field-help">Base URL of the Claude AI API endpoint. Leave as default if using the standard Red Hat AI gateway.</p>
+                        </div>
+                        <div class="form-group">
+                            <label for="aiModelId" class="form-label">Model ID</label>
+                            <input type="text" id="aiModelId" name="aiModelId" class="form-input"
+                                placeholder="claude-sonnet-4-6" />
+                            <p class="field-help">The model ID to use (e.g. claude-sonnet-4-6). Leave blank to use server default.</p>
+                        </div>
+                        <div class="form-group">
+                            <label for="aiApiToken" class="form-label">
+                                AI API Token
+                                <span class="label-hint">(Optional — uses server default if blank)</span>
+                            </label>
+                            <div class="input-with-action">
+                                <input type="password" id="aiApiToken" name="aiApiToken" class="form-input"
+                                    placeholder="Enter your API token (optional)" />
+                                <button type="button" class="toggle-visibility-btn" id="toggleAiToken">
+                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                                        <circle cx="12" cy="12" r="3"/>
+                                    </svg>
+                                </button>
+                            </div>
+                            <p class="field-help">Your personal API token. If not set, the server's configured token is used.</p>
+                        </div>
+                        <div class="form-actions">
+                            <button type="button" class="btn btn-secondary" id="testAiConfigBtn">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+                                </svg>
+                                Test Connection
+                            </button>
+                            <button type="button" class="btn btn-primary" id="saveAiConfigBtn">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+                                    <polyline points="17 21 17 13 7 13 7 21"/>
+                                    <polyline points="7 3 7 8 15 8"/>
+                                </svg>
+                                Save Settings
+                            </button>
+                        </div>
+                        <div id="aiConfigStatusMessage" class="status-message"></div>
+                    </div>
+                </div>
+            </div>
+
+                <!-- Chai AI Token Card -->
+                <div class="settings-card" id="chai-config-section" style="margin-top:1.5rem;">
+                    <div class="card-header">
+                        <div class="card-title-group">
+                            <h3 class="card-title">Chai AI Token</h3>
+                            <span class="label-hint" style="font-size:0.8em;color:#6b7280;">(Case Follow-up Chat)</span>
+                        </div>
+                        <p class="card-description">
+                            Chai is the ROSA engineering AI bot (CHannel AI). It searches Slack history, Jira, GitHub, and curated docs to answer ROSA questions.
+                            Used for the "Ask a follow-up question about this case" chat feature. Requires VPN.
+                        </p>
+                    </div>
+                    <div class="card-body">
+                        <div class="info-banner">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <circle cx="12" cy="12" r="10"/>
+                                <line x1="12" y1="16" x2="12" y2="12"/>
+                                <line x1="12" y1="8" x2="12.01" y2="8"/>
+                            </svg>
+                            <div class="info-content">
+                                <p class="info-text">
+                                    Token expires after <strong>30 days of inactivity</strong> or <strong>365 days total</strong>.
+                                    VPN must be active when using the chat feature.
+                                </p>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="chaiToken" class="form-label">
+                                Chai MCP Token
+                                <span class="label-hint">(Keep this secure)</span>
+                            </label>
+                            <div class="input-with-action">
+                                <input
+                                    type="password"
+                                    id="chaiToken"
+                                    name="chaiToken"
+                                    class="form-input"
+                                    placeholder="Enter your Chai MCP token"
+                                />
+                                <button type="button" class="toggle-visibility-btn" id="toggleChaiToken">
+                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                                        <circle cx="12" cy="12" r="3"/>
+                                    </svg>
+                                </button>
+                            </div>
+                            <p class="field-help">
+                                Obtain from the Chai MCP server setup page or your team admin.
+                                Token format: JWT (starts with <code>eyJ</code>).
+                            </p>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="chaiTokenExpiry" class="form-label">
+                                Token Expiry Date
+                                <span class="label-hint">(Optional — for expiry notifications)</span>
+                            </label>
+                            <input
+                                type="date"
+                                id="chaiTokenExpiry"
+                                name="chaiTokenExpiry"
+                                class="form-input date-input"
+                            />
+                            <p class="field-help">
+                                Enter the date your Chai token expires so Seekr can remind you to renew it.
+                            </p>
+                        </div>
+
+                        <div class="form-actions">
+                            <button type="button" class="btn btn-secondary" id="testChaiConfigBtn">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+                                </svg>
+                                Test Connection
+                            </button>
+                            <button type="button" class="btn btn-primary" id="saveChaiConfigBtn">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+                                    <polyline points="17 21 17 13 7 13 7 21"/>
+                                    <polyline points="7 3 7 8 15 8"/>
+                                </svg>
+                                Save Token
+                            </button>
+                        </div>
+                        <div id="chaiConfigStatusMessage" class="status-message"></div>
+                    </div>
+                </div>
+            </div>
+
+
         </div>
     </div>
 
     <!-- External JavaScript -->
     <script src="/src/token_manager.js?v=3.0"></script>
     <script src="/seekrai_ui.js?v=52.0.JS_CONSOLIDATED"></script>
+    <script>
+    // ─── AI Config ───────────────────────────────────────────────────────────
+    (async function initAiConfig() {
+        try {
+            const r = await fetch('/api/settings/ai-config', {credentials: 'include'});
+            if (r.ok) {
+                const d = await r.json();
+                const urlEl = document.getElementById('aiApiUrl');
+                if (urlEl && d.ai_url) urlEl.value = d.ai_url;
+                const modelEl = document.getElementById('aiModelId');
+                if (modelEl && d.ai_model) modelEl.value = d.ai_model;
+                const tokenEl = document.getElementById('aiApiToken');
+                if (tokenEl && d.has_token) tokenEl.placeholder = '(token saved — enter to replace)';
+            }
+        } catch(e) {}
+    })();
+
+    document.getElementById('toggleAiToken')?.addEventListener('click', function() {
+        const inp = document.getElementById('aiApiToken');
+        inp.type = inp.type === 'password' ? 'text' : 'password';
+    });
+
+    document.getElementById('testAiConfigBtn')?.addEventListener('click', async function() {
+        const statusEl = document.getElementById('aiConfigStatusMessage');
+        const url = document.getElementById('aiApiUrl').value.trim();
+        const model = document.getElementById('aiModelId').value.trim();
+        const token = document.getElementById('aiApiToken').value.trim();
+        statusEl.innerHTML = '<p class="info">⏳ Testing connection...</p>';
+        statusEl.style.display = 'block';
+        try {
+            const r = await fetch('/api/settings/test-ai-config', {
+                method: 'POST', credentials: 'include',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ai_url: url, ai_token: token, ai_model: model})
+            });
+            const d = await r.json();
+            statusEl.innerHTML = `<p class="${d.valid ? 'success' : 'error'}">${d.message}</p>`;
+            statusEl.style.display = 'block';
+        } catch(e) {
+            statusEl.innerHTML = `<p class="error">❌ Request failed: ${e.message}</p>`;
+            statusEl.style.display = 'block';
+        }
+    });
+
+    document.getElementById('saveAiConfigBtn')?.addEventListener('click', async function() {
+        const statusEl = document.getElementById('aiConfigStatusMessage');
+        const url = document.getElementById('aiApiUrl').value.trim();
+        const model = document.getElementById('aiModelId').value.trim();
+        const token = document.getElementById('aiApiToken').value.trim();
+        if (!url) {
+            statusEl.innerHTML = '<p class="error">⚠️ API URL is required</p>';
+            statusEl.style.display = 'block';
+            return;
+        }
+        statusEl.innerHTML = '<p class="info">⏳ Saving...</p>';
+        statusEl.style.display = 'block';
+        try {
+            const r = await fetch('/api/settings/ai-config', {
+                method: 'POST', credentials: 'include',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ai_url: url, ai_token: token, ai_model: model})
+            });
+            const d = await r.json();
+            statusEl.innerHTML = `<p class="${d.success ? 'success' : 'error'}">${d.success ? '✅ ' : '❌ '}${d.message}</p>`;
+            statusEl.style.display = 'block';
+        } catch(e) {
+            statusEl.innerHTML = `<p class="error">❌ Save failed: ${e.message}</p>`;
+            statusEl.style.display = 'block';
+        }
+    });
+
+    // ─── Chai AI Config ──────────────────────────────────────────────────────
+    (async function initChaiConfig() {
+        try {
+            const r = await fetch('/api/settings/chai-config', {credentials: 'include'});
+            if (r.ok) {
+                const d = await r.json();
+                const tokenEl = document.getElementById('chaiToken');
+                if (tokenEl && d.has_token) tokenEl.placeholder = '(token saved — enter to replace)';
+                const expiryEl = document.getElementById('chaiTokenExpiry');
+                if (expiryEl && d.expiry) expiryEl.value = d.expiry;
+            }
+        } catch(e) {}
+    })();
+
+    document.getElementById('toggleChaiToken')?.addEventListener('click', function() {
+        const inp = document.getElementById('chaiToken');
+        inp.type = inp.type === 'password' ? 'text' : 'password';
+    });
+
+    document.getElementById('testChaiConfigBtn')?.addEventListener('click', async function() {
+        const statusEl = document.getElementById('chaiConfigStatusMessage');
+        const token = document.getElementById('chaiToken').value.trim();
+        statusEl.innerHTML = '<p class="info">⏳ Testing connection (requires VPN)...</p>';
+        statusEl.style.display = 'block';
+        try {
+            const r = await fetch('/api/settings/test-chai-config', {
+                method: 'POST', credentials: 'include',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({chai_token: token})
+            });
+            const d = await r.json();
+            statusEl.innerHTML = `<p class="${d.valid ? 'success' : 'error'}">${d.message}</p>`;
+            statusEl.style.display = 'block';
+        } catch(e) {
+            statusEl.innerHTML = `<p class="error">❌ Request failed: ${e.message}</p>`;
+            statusEl.style.display = 'block';
+        }
+    });
+
+    document.getElementById('saveChaiConfigBtn')?.addEventListener('click', async function() {
+        const statusEl = document.getElementById('chaiConfigStatusMessage');
+        const token = document.getElementById('chaiToken').value.trim();
+        const expiry = document.getElementById('chaiTokenExpiry').value.trim();
+        if (!token) {
+            statusEl.innerHTML = '<p class="error">⚠️ Token is required</p>';
+            statusEl.style.display = 'block';
+            return;
+        }
+        statusEl.innerHTML = '<p class="info">⏳ Saving...</p>';
+        statusEl.style.display = 'block';
+        try {
+            const r = await fetch('/api/settings/chai-config', {
+                method: 'POST', credentials: 'include',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({chai_token: token, chai_token_expiry: expiry})
+            });
+            const d = await r.json();
+            statusEl.innerHTML = `<p class="${d.success ? 'success' : 'error'}">${d.success ? '✅ ' : '❌ '}${d.message}</p>`;
+            statusEl.style.display = 'block';
+            if (d.success) document.getElementById('chaiToken').value = '';
+        } catch(e) {
+            statusEl.innerHTML = `<p class="error">❌ Save failed: ${e.message}</p>`;
+            statusEl.style.display = 'block';
+        }
+    });
+    </script>
 </body>
 </html>

@@ -161,6 +161,7 @@
                                 <span class="filter-label">Slack Threads</span>
                                 <span class="filter-count" id="filter-slack-count">(0)</span>
                             </label>
+
                             <label class="filter-option">
                                 <input type="checkbox" class="filter-checkbox source-filter" data-source="kcs" checked />
                                 <span class="filter-label">KCS Articles</span>
@@ -386,6 +387,7 @@
                     <div class="detail-tabs">
                         <button class="detail-tab active" data-tab="overview">Overview</button>
                         <button class="detail-tab" data-tab="escalation-ohss">Linked JIRA ticket</button>
+                        <button class="detail-tab ai-tab" data-tab="ai-summary" style="display:none;">🤖 AI Summary</button>
                     </div>
 
                     <div class="detail-content">
@@ -396,6 +398,41 @@
                                 <p class="section-text">
                                     Customer is experiencing ingress timeout when accessing applications after performing a cluster upgrade on ROSA.
                                 </p>
+                            </div>
+                        </div>
+
+                        <!-- AI Summary Tab Content -->
+                        <div class="tab-content" data-tab-content="ai-summary">
+                            <div class="detail-section" id="ai-summary-section">
+                                <div id="ai-summary-trigger">
+                                    <p style="color: #666; margin-bottom: 1rem;">Click the button below to generate an AI analysis of this case using Claude + ask-sre knowledge base.</p>
+                                    <button class="ai-summary-btn" id="ai-summary-btn" onclick="triggerAISummary()">
+                                        🤖 Generate AI Summary
+                                    </button>
+                                </div>
+                                <div id="ai-summary-result" style="display:none;"></div>
+                                <div id="ai-chat-box" class="ai-chat-box" style="display:none;">
+                                    <div class="ai-chat-header">💬 Ask a follow-up question about this case</div>
+                                    <div class="ai-chat-messages" id="ai-chat-messages"></div>
+                                    <div class="ai-source-row">
+                                        <span class="ai-source-label">Ask using:</span>
+                                        <label class="ai-source-toggle">
+                                            <input type="checkbox" id="aiSrcChai">
+                                            <span>🐼 Chai AI</span>
+                                        </label>
+                                        <label class="ai-source-toggle">
+                                            <input type="checkbox" id="aiSrcClaude" checked>
+                                            <span>🤖 Claude</span>
+                                        </label>
+                                    </div>
+                                    <div class="ai-chat-input-row">
+                                        <textarea class="ai-chat-input" id="ai-chat-input"
+                                            placeholder="Ask anything about this case… (Enter to send, Shift+Enter for newline)"
+                                            rows="2"
+                                            onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendAIChat();}"></textarea>
+                                        <button class="ai-chat-send" id="ai-chat-send" onclick="sendAIChat()">Send ↵</button>
+                                    </div>
+                                </div>
                             </div>
                         </div>
 

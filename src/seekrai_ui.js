@@ -4210,6 +4210,13 @@ function showDetailPanel(resultData, source) {
         }
     }
 
+    // Show AI Summary tab only for Salesforce cases
+    const aiTab = detailPanel.querySelector('.ai-tab');
+    if (aiTab) {
+        aiTab.style.display = source === 'salesforce' ? '' : 'none';
+        setAIContext(resultData.case_number, resultData);
+    }
+
     // Update summary section
     const summaryTitle = detailPanel.querySelector('.summary-title');
     if (summaryTitle) {
@@ -6664,4 +6671,313 @@ if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', initSettingsPage);
 } else {
     initSettingsPage();
+}
+
+// ============================================================================
+// Slack Channel Filter Functions
+// ============================================================================
+
+const COMMON_SLACK_CHANNELS = [
+    'forum-rosa-support',
+    'openshift-sre',
+    'team-sre',
+    'sre-alerts',
+    'sre-general',
+    'rosa-sre',
+    'osd-sre',
+    'forum-managed-openshift',
+    'ask-sre',
+];
+
+// ============================================================================
+// AI SUMMARY + CHAT
+// ============================================================================
+
+let _aiCaseNumber   = null;
+let _aiCaseData     = null;
+let _aiChatHistory  = [];
+let _aiSummaryHtml  = '';
+
+function resetAISummaryPanel() {
+    _aiCaseNumber  = null;
+    _aiCaseData    = null;
+    _aiChatHistory = [];
+    _aiSummaryHtml = '';
+    const trigger    = document.getElementById('ai-summary-trigger');
+    const result     = document.getElementById('ai-summary-result');
+    const chatBox    = document.getElementById('ai-chat-box');
+    const btn        = document.getElementById('ai-summary-btn');
+    const msgs       = document.getElementById('ai-chat-messages');
+    const regenBar   = document.getElementById('ai-regenerate-bar');
+    if (trigger)  trigger.style.display = 'block';
+    if (result)   { result.style.display = 'none'; result.innerHTML = ''; }
+    if (chatBox)  chatBox.style.display  = 'none';
+    if (btn)      { btn.disabled = false; btn.textContent = '🤖 Generate AI Summary'; }
+    if (msgs)     msgs.innerHTML = '';
+    if (regenBar) regenBar.remove();
+}
+
+function setAIContext(caseNumber, caseData) {
+    if (_aiCaseNumber !== caseNumber) {
+        resetAISummaryPanel();
+        _aiCaseNumber = caseNumber;
+        _aiCaseData   = caseData;
+    }
+}
+
+async function triggerAISummary() {
+    if (!_aiCaseNumber) {
+        alert('Please open an SFDC case first.');
+        return;
+    }
+    const btn     = document.getElementById('ai-summary-btn');
+    const result  = document.getElementById('ai-summary-result');
+    const trigger = document.getElementById('ai-summary-trigger');
+
+    btn.disabled = true;
+    btn.textContent = '⏳ Analyzing with Claude…';
+    if (result) { result.style.display = 'block'; result.innerHTML = '<div class="ai-summary-loading"><div class="loading-spinner"></div><p>Generating AI summary — this may take up to 30 seconds…</p></div>'; }
+
+    try {
+        const resp = await fetch('/api/ai/case-summary', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            credentials: 'include',
+            body: JSON.stringify({
+                case_number: _aiCaseNumber,
+                case_data:   _aiCaseData || {}
+            })
+        });
+        const data = await resp.json();
+
+        if (data.timeout) {
+            result.innerHTML = '<p style="color:#fc8181;">⏱ Claude timed out. <button onclick="triggerAISummary()">🔄 Retry</button></p>';
+            btn.disabled = false;
+            btn.textContent = '🤖 Generate AI Summary';
+            return;
+        }
+        if (data.error && !data.html) {
+            result.innerHTML = `<p style="color:#fc8181;">⚠ ${escapeHtml(data.error)}</p>`;
+            btn.disabled = false;
+            btn.textContent = '🤖 Retry AI Summary';
+            return;
+        }
+
+        _aiSummaryHtml = data.html || '';
+
+        // Build linked resources bar
+        let linkedHtml = '';
+        const lr = data.linked_resources || {};
+        const kcsLinks  = lr.kcs      || [];
+        const jiraLinks = lr.jira     || [];
+        const bzLinks   = lr.bugzilla || [];
+        const hasLinks  = kcsLinks.length + jiraLinks.length + bzLinks.length > 0;
+        if (hasLinks) {
+            linkedHtml = '<div class="ai-linked-bar"><strong>🔗 Linked in Case:</strong> ';
+            kcsLinks.slice(0,5).forEach(url => {
+                const id = (url.match(/\/(\d+)/) || [])[1] || 'KCS';
+                linkedHtml += `<a href="${url}" target="_blank" class="ai-pill ai-kcs-pill">📚 KCS-${id}</a> `;
+            });
+            jiraLinks.slice(0,6).forEach(j => {
+                linkedHtml += `<a href="${escapeHtml(j.url)}" target="_blank" class="ai-pill ai-jira-pill">🔧 ${escapeHtml(j.key)}</a> `;
+            });
+            bzLinks.slice(0,4).forEach(b => {
+                linkedHtml += `<a href="${escapeHtml(b.url)}" target="_blank" class="ai-pill ai-bz-pill">🐛 BZ-${b.id}</a> `;
+            });
+            linkedHtml += '</div>';
+        }
+
+        const modeColor = data.mode === 'closed' ? '#68d391' : '#f6ad55';
+        const modeLabel = data.mode === 'closed' ? '📋 Closed Case — Post-mortem Summary' : '🔄 Open Case — Analysis & Suggestions';
+
+        result.innerHTML = `
+            <div class="ai-mode-banner" style="background:${modeColor}18; border-left:4px solid ${modeColor}; padding:8px 12px; margin-bottom:12px; border-radius:4px;">
+                <strong style="color:${modeColor};">${modeLabel}</strong>
+                <span style="color:#718096; font-size:11px; margin-left:8px;">Status: ${escapeHtml(data.status || '')}</span>
+            </div>
+            ${linkedHtml}
+            <div class="ai-summary-body">${data.html || ''}</div>`;
+
+        if (trigger) trigger.style.display = 'none';
+        const chatBox = document.getElementById('ai-chat-box');
+        if (chatBox) chatBox.style.display = 'block';
+
+        btn.textContent = '🔄 Regenerate Summary';
+        btn.disabled = false;
+
+        const existingRegen = document.getElementById('ai-regenerate-bar');
+        if (existingRegen) existingRegen.remove();
+        result.insertAdjacentHTML('afterend', `
+            <div id="ai-regenerate-bar" style="padding: 8px 0 4px;">
+                <button class="ai-summary-btn" style="font-size:12px; padding:6px 14px;" onclick="triggerAISummary()">🔄 Regenerate</button>
+            </div>`);
+
+    } catch (err) {
+        result.innerHTML = `<p style="color:#fc8181;">⚠ Request failed: ${escapeHtml(err.message)}</p>`;
+        btn.disabled = false;
+        btn.textContent = '🤖 Retry AI Summary';
+    }
+}
+
+async function sendAIChat() {
+    const input   = document.getElementById('ai-chat-input');
+    const sendBtn = document.getElementById('ai-chat-send');
+    const msgs    = document.getElementById('ai-chat-messages');
+    if (!input || !msgs) return;
+
+    const question = input.value.trim();
+    if (!question) return;
+
+    const userBubble = document.createElement('div');
+    userBubble.className = 'ai-chat-msg-user';
+    userBubble.textContent = question;
+    msgs.appendChild(userBubble);
+
+    const useChai   = document.getElementById('aiSrcChai')?.checked   ?? false;
+    const useClaude = document.getElementById('aiSrcClaude')?.checked ?? true;
+    if (!useChai && !useClaude) {
+        alert('Please select at least one AI source (Chai AI or Claude).');
+        return;
+    }
+    const sources = [];
+    if (useChai)   sources.push('chai');
+    if (useClaude) sources.push('claude');
+
+    const clusterKeywords = ['check', 'cluster', 'node', 'pod', 'healthy', 'health', 'investigate', 'diagnose', 'logged in', 'login to cluster', 'i had login'];
+    const isClusterQ = clusterKeywords.some(k => question.toLowerCase().includes(k));
+
+    // Placeholder bubbles — only for selected sources
+    function _makeSourceLabel(icon, label, color) {
+        const tag = document.createElement('div');
+        tag.style.cssText = `font-size:11px;font-weight:600;color:${color};margin-bottom:4px;display:flex;align-items:center;gap:5px;`;
+        tag.innerHTML = `<span>${icon}</span><span>${label}</span>`;
+        return tag;
+    }
+    function _thinkingSpinner(label) {
+        const wrap = document.createElement('div');
+        wrap.className = 'ai-chat-msg-ai';
+        wrap.style.cssText = 'border-left:3px solid #805ad5;';
+        wrap.appendChild(_makeSourceLabel('🐼', label, '#805ad5'));
+        const spin = document.createElement('div');
+        spin.style.cssText = 'display:flex;align-items:center;gap:6px;color:#718096;font-size:13px;';
+        spin.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" style="animation:ai-spin 1s linear infinite;flex-shrink:0"><circle cx="12" cy="12" r="10" stroke="#805ad5" stroke-width="3" fill="none" stroke-dasharray="31 63" stroke-linecap="round"/></svg><span>Thinking…</span>';
+        wrap.appendChild(spin);
+        return wrap;
+    }
+
+    const chaiPlaceholder = useChai ? _thinkingSpinner('Chai AI (MCS Persona)') : null;
+    const claudePlaceholder = useClaude ? document.createElement('div') : null;
+    if (claudePlaceholder) {
+        claudePlaceholder.className = 'ai-chat-msg-ai';
+        claudePlaceholder.style.cssText = 'border-left:3px solid #3182ce;';
+        claudePlaceholder.appendChild(_makeSourceLabel('🤖', 'Claude', '#3182ce'));
+        const claudeWaiting = document.createElement('span');
+        claudeWaiting.style.cssText = 'color:#718096;font-size:13px;';
+        claudeWaiting.textContent = isClusterQ
+            ? '🖥️ Running cluster investigation (oc commands)…'
+            : '🔍 Searching SOPs & KCS…';
+        claudePlaceholder.appendChild(claudeWaiting);
+    }
+
+    if (chaiPlaceholder)   msgs.appendChild(chaiPlaceholder);
+    if (claudePlaceholder) msgs.appendChild(claudePlaceholder);
+    msgs.scrollTop = msgs.scrollHeight;
+
+    input.value = '';
+    sendBtn.disabled = true;
+
+    const controller = new AbortController();
+    const fetchTimeout = setTimeout(() => controller.abort(), 240000); // 4-minute client-side guard
+
+    try {
+        const resp = await fetch('/api/ai/case-chat', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            credentials: 'include',
+            signal: controller.signal,
+            body: JSON.stringify({
+                case_number:  _aiCaseNumber,
+                case_summary: _aiSummaryHtml,
+                messages:     _aiChatHistory,
+                question:     question,
+                sources:      sources
+            })
+        });
+        clearTimeout(fetchTimeout);
+        const data = await resp.json();
+
+        const errTarget = claudePlaceholder || chaiPlaceholder;
+        if (data.error) {
+            if (chaiPlaceholder && chaiPlaceholder !== errTarget) chaiPlaceholder.remove();
+            if (errTarget) {
+                errTarget.innerHTML = '';
+                errTarget.style.color = '#fc8181';
+                errTarget.style.borderLeft = '3px solid #fc8181';
+                errTarget.textContent = '⚠ ' + data.error;
+            }
+        } else {
+            // --- Chai AI bubble ---
+            if (chaiPlaceholder) {
+                chaiPlaceholder.innerHTML = '';
+                chaiPlaceholder.style.borderLeft = '3px solid #805ad5';
+                chaiPlaceholder.appendChild(_makeSourceLabel('🐼', 'Chai AI (MCS Persona)', '#805ad5'));
+                if (data.chai_answer) {
+                    const chaiBody = document.createElement('div');
+                    chaiBody.innerHTML = data.chai_answer;
+                    chaiPlaceholder.appendChild(chaiBody);
+                } else {
+                    const noChat = document.createElement('span');
+                    noChat.style.cssText = 'color:#718096;font-size:13px;font-style:italic;';
+                    noChat.textContent = 'Chai AI did not return a response.';
+                    chaiPlaceholder.appendChild(noChat);
+                }
+            }
+
+            // --- Claude bubble ---
+            if (claudePlaceholder) {
+                claudePlaceholder.innerHTML = '';
+                claudePlaceholder.style.borderLeft = '3px solid #3182ce';
+                claudePlaceholder.appendChild(_makeSourceLabel('🤖', 'Claude', '#3182ce'));
+                if (data.claude_answer) {
+                    const claudeBody = document.createElement('div');
+                    claudeBody.innerHTML = data.claude_answer;
+                    claudePlaceholder.appendChild(claudeBody);
+
+                    if (data.refs && data.refs.length > 0) {
+                        const refBar = document.createElement('div');
+                        refBar.className = 'ai-chat-refs';
+                        refBar.innerHTML = '<span style="font-size:11px;color:#718096;">Sources: </span>' +
+                            data.refs.map(r => `<a href="${r.url || '#'}" target="_blank" class="ai-pill ${r.type === 'kcs' ? 'ai-kcs-pill' : 'ai-sop-pill'}">${escapeHtml((r.title || 'Ref').substring(0, 35))}</a>`).join(' ');
+                        claudePlaceholder.appendChild(refBar);
+                    }
+
+                    _aiChatHistory.push({role: 'user', content: question});
+                    _aiChatHistory.push({role: 'assistant', content: data.claude_answer});
+                } else {
+                    const noClaude = document.createElement('span');
+                    noClaude.style.cssText = 'color:#718096;font-size:13px;font-style:italic;';
+                    noClaude.textContent = 'Claude did not return a response.';
+                    claudePlaceholder.appendChild(noClaude);
+                }
+            }
+        }
+        msgs.scrollTop = msgs.scrollHeight;
+    } catch (err) {
+        clearTimeout(fetchTimeout);
+        if (chaiPlaceholder) chaiPlaceholder.remove();
+        const errTarget = claudePlaceholder || document.createElement('div');
+        if (!claudePlaceholder) msgs.appendChild(errTarget);
+        errTarget.className  = errTarget.className || 'ai-chat-msg-ai';
+        errTarget.innerHTML  = '';
+        errTarget.style.color       = '#fc8181';
+        errTarget.style.borderLeft  = '3px solid #fc8181';
+        const msg = err.name === 'AbortError'
+            ? '⚠ Cluster investigation timed out (>4 min). Try a more specific question.'
+            : '⚠ Request failed: ' + err.message;
+        errTarget.textContent = msg;
+        msgs.scrollTop = msgs.scrollHeight;
+    } finally {
+        sendBtn.disabled = false;
+        input.focus();
+    }
 }
