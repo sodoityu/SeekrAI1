@@ -2481,6 +2481,9 @@ async function performSearch() {
     if (queryLower.includes('ohss') || queryLower.includes('jira')) {
         detectedSources.push('ohss');
     }
+    if (queryLower.includes('rovo')) {
+        detectedSources.push('rovo');
+    }
     if (queryLower.includes('slack')) {
         detectedSources.push('slack');
     }
@@ -2631,6 +2634,9 @@ async function saveSearchToHistory(query, totalResults, results) {
                     break;
                 case 'ohss':
                     if (results.jira?.issues?.length > 0) sources.push('jira');
+                    break;
+                case 'rovo':
+                    if (results.rovo?.issues?.length > 0) sources.push('rovo');
                     break;
                 case 'slack':
                     if (results.slack?.messages?.length > 0) sources.push('slack');
@@ -2821,6 +2827,7 @@ function applySortToResults() {
     // Re-render all sections with sorted data
     renderSFDCResults(results.sfdc || {cases: [], total: 0});
     renderJiraResults(results.jira || {issues: [], total: 0});
+    renderRovoResults(results.rovo || {issues: [], total: 0});
     renderSlackResults(results.slack || {messages: [], total: 0});
     renderKCSResults(results.kcs || {articles: [], total: 0});
     renderSOPResults(results.sop || {sops: [], total: 0});
@@ -2855,6 +2862,7 @@ function displaySearchResults(results, query) {
     // Calculate total results based on ACTUAL displayed items, not total matches
     const totalResults =
         (results.jira?.issues?.length || 0) +
+        (results.rovo?.issues?.length || 0) +
         (results.sfdc?.cases?.length || 0) +
         (results.slack?.messages?.length || 0) +
         (results.kcs?.articles?.length || 0) +
@@ -2906,6 +2914,7 @@ function displaySearchResults(results, query) {
     window.paginationState = {
         sfdc: { currentPage: 1, itemsPerPage: 10 },
         jira: { currentPage: 1, itemsPerPage: 10 },
+        rovo: { currentPage: 1, itemsPerPage: 10 },
         slack: { currentPage: 1, itemsPerPage: 10 },
         kcs: { currentPage: 1, itemsPerPage: 10 },
         sop: { currentPage: 1, itemsPerPage: 10 },
@@ -2921,6 +2930,9 @@ function displaySearchResults(results, query) {
 
     // Render Jira/OHSS results
     renderJiraResults(results.jira || {issues: [], total: 0});
+
+    // Render Rovo semantic search results
+    renderRovoResults(results.rovo || {issues: [], total: 0});
 
     // Render Slack results
     renderSlackResults(results.slack || {messages: [], total: 0});
@@ -2941,6 +2953,7 @@ function displaySearchResults(results, query) {
     const sourcesWithResults = [];
     if (results.sfdc?.cases?.length > 0) sourcesWithResults.push('salesforce');
     if (results.jira?.issues?.length > 0) sourcesWithResults.push('ohss');
+    if (results.rovo?.issues?.length > 0) sourcesWithResults.push('rovo');
     if (results.slack?.messages?.length > 0) sourcesWithResults.push('slack');
     if (results.kcs?.articles?.length > 0) sourcesWithResults.push('kcs');
     if (results.sop?.sops?.length > 0) sourcesWithResults.push('sop');
@@ -3158,6 +3171,9 @@ function changePage(source, page) {
             break;
         case 'jira':
             renderJiraResults(window.lastSearchResults.jira || {issues: [], total: 0});
+            break;
+        case 'rovo':
+            renderRovoResults(window.lastSearchResults.rovo || {issues: [], total: 0});
             break;
         case 'slack':
             renderSlackResults(window.lastSearchResults.slack || {messages: [], total: 0});
@@ -3497,6 +3513,206 @@ function renderJiraResults(jira) {
     section.innerHTML += createPaginationControls('jira', totalItems);
 
     updateSectionHeader('ohss', jira.issues.length, jira.total);
+}
+
+function renderRovoResults(rovo) {
+    const section = document.querySelector('[data-source="rovo"] .section-content');
+    if (!section) return;
+
+    const count = rovo.issues?.length || 0;
+    const headerElement = document.getElementById('rovo-count');
+    const filterElement = document.getElementById('filter-rovo-count');
+    if (headerElement) headerElement.textContent = `Rovo Search (${count})`;
+    if (filterElement) filterElement.textContent = `(${count})`;
+
+    if (!rovo.issues || rovo.issues.length === 0) {
+        if (rovo.error === 'Rovo not connected') {
+            section.innerHTML = `
+                <div class="no-results" style="padding: 20px; background: #fff3cd; border-left: 4px solid #ffc107; color: #856404;">
+                    <strong>⚠️ Rovo Not Connected</strong>
+                    <p style="margin-top: 8px;">Connect your Rovo account in Settings to enable semantic Jira search.</p>
+                    <a href="#" onclick="document.querySelector('.settings-btn').click(); return false;" style="color: #ee0000; text-decoration: underline;">Go to Settings</a>
+                </div>`;
+        } else if (rovo.error === 'rovo_token_expired') {
+            section.innerHTML = `
+                <div class="no-results" style="padding: 20px; background: #f8d7da; border-left: 4px solid #dc3545; color: #721c24;">
+                    <strong>🔑 Rovo Token Expired</strong>
+                    <p style="margin-top: 8px;">Please reconnect Rovo in Settings.</p>
+                    <a href="#" onclick="document.querySelector('.settings-btn').click(); return false;" style="color: #ee0000; text-decoration: underline;">Go to Settings</a>
+                </div>`;
+        } else {
+            section.innerHTML = '<p class="no-results">No Rovo results found</p>';
+        }
+        return;
+    }
+
+    section.innerHTML = rovo.issues.map(issue => `
+        <div class="result-item" data-rovo-key="${issue.key || ''}">
+            <div class="result-header">
+                <div class="result-title">
+                    <img src="/src/images/atlassian-jira.svg" class="result-icon" alt="Rovo" />
+                    ${issue.key ? `${issue.key} - ` : ''}${issue.summary || 'No summary'}
+                </div>
+            </div>
+            ${issue.snippet ? `<p class="result-snippet" style="margin: 6px 0; font-size: 13px; color: #555;">${issue.snippet}</p>` : ''}
+            <div class="result-meta" style="display: flex; gap: 20px; margin: 6px 0; font-size: 13px; color: #666;">
+                ${issue.project ? `<span><strong>Project:</strong> ${issue.project}</span>` : ''}
+                ${issue.issue_type ? `<span><strong>Type:</strong> ${issue.issue_type}</span>` : ''}
+                ${issue.last_modified ? `<span><strong>Updated:</strong> ${issue.last_modified?.slice(0,10)}</span>` : ''}
+            </div>
+            <div style="display:flex; gap:10px; align-items:center; margin-top:6px;" onclick="event.stopPropagation()">
+                <a href="${issue.url}" target="_blank" class="view-link atlassian">View in Jira</a>
+            </div>
+        </div>
+    `).join('');
+
+    updateSectionHeader('rovo', count, rovo.total);
+}
+
+// Panel-based Jira AI summary helpers (used by the right-side detail panel for Rovo results)
+let _rovoCurrentKey = '';
+const _jiraChatHistory = {};
+
+async function triggerJiraAISummaryInPanel() {
+    const issueKey = _rovoCurrentKey;
+    if (!issueKey) return;
+
+    const btn     = document.getElementById('ai-summary-btn');
+    const result  = document.getElementById('ai-summary-result');
+    const trigger = document.getElementById('ai-summary-trigger');
+    const chatBox = document.getElementById('ai-chat-box');
+
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Analyzing with Claude…'; }
+    if (result) { result.style.display = 'block'; result.innerHTML = '<div class="ai-summary-loading"><div class="loading-spinner"></div><p>Generating AI summary — this may take up to 30 seconds…</p></div>'; }
+
+    try {
+        const resp = await fetch('/api/ai/jira-summary', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            credentials: 'include',
+            body: JSON.stringify({ issue_key: issueKey }),
+        });
+        const data = await resp.json();
+
+        if (data.timeout) {
+            if (result) result.innerHTML = `<p style="color:#fc8181;">⏱ Claude timed out. <button class="ai-summary-btn" style="font-size:12px;padding:4px 10px;" onclick="triggerJiraAISummaryInPanel()">🔄 Retry</button></p>`;
+            if (btn) { btn.disabled = false; btn.textContent = '🤖 Generate AI Summary'; }
+            return;
+        }
+        if (data.error) {
+            if (result) result.innerHTML = `<p style="color:#fc8181;">⚠ ${escapeHtml(data.error)}</p>`;
+            if (btn) { btn.disabled = false; btn.textContent = '🤖 Retry AI Summary'; }
+            return;
+        }
+
+        const summaryHtml = data.html || '';
+        if (result) {
+            result.innerHTML = `
+                <div style="background:#ebf8ff;border-left:4px solid #4299e1;padding:8px 12px;margin-bottom:12px;border-radius:4px;">
+                    <strong style="color:#2b6cb0;">${escapeHtml(issueKey)}</strong>
+                    <span style="color:#718096;font-size:11px;margin-left:8px;">Status: ${escapeHtml(data.status || '')}</span>
+                </div>
+                <div class="ai-summary-body">${summaryHtml}</div>`;
+            result.dataset.summary = summaryHtml;
+        }
+        if (trigger) trigger.style.display = 'none';
+        if (chatBox) chatBox.style.display = 'block';
+        if (btn) { btn.textContent = '🔄 Regenerate Summary'; btn.disabled = false; }
+        _jiraChatHistory[issueKey] = [];
+
+        const existingRegen = document.getElementById('ai-regenerate-bar');
+        if (existingRegen) existingRegen.remove();
+        if (result) result.insertAdjacentHTML('afterend', `
+            <div id="ai-regenerate-bar" style="padding:8px 0 4px;">
+                <button class="ai-summary-btn" style="font-size:12px;padding:6px 14px;" onclick="triggerJiraAISummaryInPanel()">🔄 Regenerate</button>
+            </div>`);
+
+    } catch (err) {
+        if (result) result.innerHTML = `<p style="color:#fc8181;">⚠ Request failed: ${escapeHtml(err.message)}</p>`;
+        if (btn) { btn.disabled = false; btn.textContent = '🤖 Retry AI Summary'; }
+    }
+}
+
+async function sendJiraAIChatInPanel() {
+    const issueKey = _rovoCurrentKey;
+    const input    = document.getElementById('ai-chat-input');
+    const sendBtn  = document.getElementById('ai-chat-send');
+    const msgs     = document.getElementById('ai-chat-messages');
+    const result   = document.getElementById('ai-summary-result');
+    if (!input || !msgs || !issueKey) return;
+
+    const question = input.value.trim();
+    if (!question) return;
+
+    const useChai   = document.getElementById('aiSrcChai')?.checked   ?? false;
+    const useClaude = document.getElementById('aiSrcClaude')?.checked ?? true;
+    if (!useChai && !useClaude) {
+        alert('Please select at least one AI source (Chai AI or Claude).');
+        return;
+    }
+    const sources = [...(useChai ? ['chai'] : []), ...(useClaude ? ['claude'] : [])];
+
+    input.value = '';
+
+    const userBubble = document.createElement('div');
+    userBubble.className = 'ai-chat-msg-user';
+    userBubble.textContent = question;
+    msgs.appendChild(userBubble);
+    msgs.scrollTop = msgs.scrollHeight;
+
+    const history      = _jiraChatHistory[issueKey] || [];
+    const issueSummary = result?.dataset.summary || '';
+
+    const loadingBubble = document.createElement('div');
+    loadingBubble.className = 'ai-chat-msg-assistant';
+    loadingBubble.innerHTML = `<em style="color:#718096;">${useChai && !useClaude ? '🐼 Chai AI' : '🤖 Claude'} is thinking…</em>`;
+    msgs.appendChild(loadingBubble);
+    msgs.scrollTop = msgs.scrollHeight;
+    if (sendBtn) sendBtn.disabled = true;
+
+    try {
+        const resp = await fetch('/api/ai/jira-chat', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            credentials: 'include',
+            body: JSON.stringify({
+                issue_key:     issueKey,
+                issue_summary: issueSummary,
+                messages:      history,
+                question:      question,
+                sources:       sources,
+            }),
+        });
+        const data = await resp.json();
+
+        if (data.error) {
+            loadingBubble.innerHTML = `<span style="color:#fc8181;">⚠ ${escapeHtml(data.error)}</span>`;
+        } else if (useChai && useClaude && data.chai_answer && data.claude_answer) {
+            // Both: show side-by-side tabs like SFDC case-chat
+            loadingBubble.innerHTML = `
+                <div style="display:flex;gap:8px;margin-bottom:6px;">
+                    <strong style="color:#805ad5;">🐼 Chai AI</strong>
+                </div>
+                <div>${data.chai_answer}</div>
+                <hr style="margin:8px 0;border-color:#e2e8f0;">
+                <div style="display:flex;gap:8px;margin-bottom:6px;">
+                    <strong style="color:#2b6cb0;">🤖 Claude</strong>
+                </div>
+                <div>${data.claude_answer}</div>`;
+        } else {
+            loadingBubble.innerHTML = data.answer || '(no response)';
+        }
+
+        if (!data.error) {
+            history.push({ role: 'user',      content: question });
+            history.push({ role: 'assistant', content: data.answer || '' });
+            _jiraChatHistory[issueKey] = history;
+        }
+    } catch (err) {
+        loadingBubble.innerHTML = `<span style="color:#fc8181;">⚠ ${escapeHtml(err.message)}</span>`;
+    }
+    msgs.scrollTop = msgs.scrollHeight;
+    if (sendBtn) sendBtn.disabled = false;
 }
 
 // Format Slack message text to HTML with proper rendering of mentions, links, and formatting
@@ -4160,6 +4376,7 @@ function showDetailPanel(resultData, source) {
         'salesforce': '/src/images/salesforce-logo.svg',
         'ohss': '/src/images/atlassian-jira.svg',
         'jira': '/src/images/atlassian-jira.svg',  // All Jira tickets (OHSS, RFE, etc.)
+        'rovo': '/src/images/atlassian-jira.svg',
         'slack': '/src/images/slack_logo_icon.svg',
         'kcs': '/src/images/Logo-Red_Hat-Hat_icon-Standard-RGB.svg',  // Match search results logo
         'sop': '/src/images/Logo-Red_Hat-Hat_icon-Red-RGB.svg',
@@ -4176,6 +4393,8 @@ function showDetailPanel(resultData, source) {
         detailTitle.textContent = `Salesforce Case #${resultData.case_number}`;
     } else if (source === 'ohss' || source === 'jira') {
         detailTitle.textContent = `Jira ${resultData.key}`;
+    } else if (source === 'rovo') {
+        detailTitle.textContent = `Jira ${resultData.key || '(Rovo result)'}`;
     } else if (source === 'slack') {
         detailTitle.textContent = `Slack #${resultData.channel_name || resultData.channel || 'unknown'}`;
     } else if (source === 'kcs' || source === 'sop') {
@@ -4195,8 +4414,7 @@ function showDetailPanel(resultData, source) {
         } else if (source === 'ohss' || source === 'jira') {
             secondTab.textContent = 'Linked Salesforce ticket';
             secondTab.style.display = 'block';
-        } else if (source === 'github' || source === 'gitlab' || source === 'slack' || source === 'kcs' || source === 'sop') {
-            // Hide External Trackers tab for sources that don't have linked tickets
+        } else if (source === 'rovo' || source === 'github' || source === 'gitlab' || source === 'slack' || source === 'kcs' || source === 'sop') {
             secondTab.style.display = 'none';
         }
     }
@@ -4207,6 +4425,44 @@ function showDetailPanel(resultData, source) {
             relatedContentTab.style.display = 'none';
         } else {
             relatedContentTab.style.display = 'block';
+        }
+    }
+
+    // Show AI Summary tab for Salesforce and Rovo; wire handlers appropriately
+    const aiTab = detailPanel.querySelector('.ai-tab');
+    if (aiTab) {
+        if (source === 'salesforce') {
+            aiTab.style.display = '';
+            setAIContext(resultData.case_number, resultData);
+            // Restore SFDC AI button behaviour
+            const aiBtn = document.getElementById('ai-summary-btn');
+            if (aiBtn) { aiBtn.onclick = triggerAISummary; }
+            const chatSend = document.getElementById('ai-chat-send');
+            if (chatSend) { chatSend.onclick = sendAIChat; }
+            const chatInput = document.getElementById('ai-chat-input');
+            if (chatInput) { chatInput.onkeydown = null; }
+        } else if (source === 'rovo') {
+            aiTab.style.display = '';
+            _rovoCurrentKey = resultData.key || '';
+            // Reset AI panel state for the new issue
+            const aiSummaryResult  = document.getElementById('ai-summary-result');
+            const aiSummaryTrigger = document.getElementById('ai-summary-trigger');
+            const aiChatBox        = document.getElementById('ai-chat-box');
+            const aiChatMsgs       = document.getElementById('ai-chat-messages');
+            const aiBtn            = document.getElementById('ai-summary-btn');
+            if (aiSummaryResult)  { aiSummaryResult.style.display = 'none'; aiSummaryResult.innerHTML = ''; delete aiSummaryResult.dataset.summary; }
+            if (aiSummaryTrigger) aiSummaryTrigger.style.display = 'block';
+            if (aiChatBox)        aiChatBox.style.display = 'none';
+            if (aiChatMsgs)       aiChatMsgs.innerHTML = '';
+            const regenBar = document.getElementById('ai-regenerate-bar');
+            if (regenBar) regenBar.remove();
+            if (aiBtn) { aiBtn.textContent = '🤖 Generate AI Summary'; aiBtn.disabled = false; aiBtn.onclick = triggerJiraAISummaryInPanel; }
+            const chatSend = document.getElementById('ai-chat-send');
+            if (chatSend) chatSend.onclick = sendJiraAIChatInPanel;
+            const chatInput = document.getElementById('ai-chat-input');
+            if (chatInput) { chatInput.onkeydown = (e) => { if (e.key === 'Enter') sendJiraAIChatInPanel(); }; }
+        } else {
+            aiTab.style.display = 'none';
         }
     }
 
@@ -4365,6 +4621,30 @@ function showDetailPanel(resultData, source) {
                 sbtElement.textContent = 'Error loading';
                 document.getElementById('detail-sbr').textContent = 'Error loading';
             });
+    } else if (source === 'rovo') {
+        // Update meta labels/values for Rovo results
+        const metaRows = detailPanel.querySelectorAll('.meta-row strong');
+        const metaRowElements = detailPanel.querySelectorAll('.meta-row');
+        if (metaRows.length >= 9) {
+            metaRows[0].textContent = 'Assignee:';
+            metaRows[1].textContent = 'Reporter:';
+            metaRows[2].textContent = 'Status:';
+            metaRows[3].textContent = 'Updated:';
+            if (metaRowElements[4]) metaRowElements[4].style.display = 'none';
+            metaRows[5].textContent = 'Project:';
+            metaRows[6].textContent = 'Priority:';
+            metaRows[7].textContent = 'Work Type:';
+            metaRows[8].textContent = 'Components:';
+            for (let i of [5,6,7,8]) { if (metaRowElements[i]) metaRowElements[i].style.display = ''; }
+        }
+        document.getElementById('detail-owner').textContent = resultData.assignee || 'N/A';
+        document.getElementById('detail-status').textContent = resultData.reporter || 'N/A';
+        document.getElementById('detail-internal-status').textContent = resultData.status || resultData.issue_type || 'N/A';
+        document.getElementById('detail-account-number').textContent = resultData.last_modified?.slice(0,10) || 'N/A';
+        document.getElementById('detail-product').textContent = resultData.project || 'N/A';
+        document.getElementById('detail-severity').textContent = resultData.priority || 'N/A';
+        document.getElementById('detail-sbt').textContent = resultData.issue_type || 'N/A';
+        document.getElementById('detail-sbr').textContent = 'N/A';
     } else if (source === 'ohss' || source === 'jira') {
         // Update labels for Jira tickets (OHSS, RFE, etc.)
         const metaRows = detailPanel.querySelectorAll('.meta-row strong');
@@ -4998,6 +5278,24 @@ function showDetailPanel(resultData, source) {
                             });
                     }
                 }
+            } else if (source === 'rovo') {
+                // Show Rovo snippet first; fetch full description asynchronously
+                const snippet = resultData.snippet || resultData.summary || 'Loading description…';
+                restoredSectionText.innerHTML = snippet.replace(/\n/g, '<br>');
+                const rovoKey = resultData.key;
+                if (rovoKey) {
+                    fetch(`/api/jira-issue/${rovoKey}`, { credentials: 'include' })
+                        .then(r => r.json())
+                        .then(d => {
+                            if (d.description) {
+                                restoredSectionText.innerHTML = d.description.replace(/\n/g, '<br>');
+                            }
+                        })
+                        .catch(() => {});
+                }
+                // No related content fetch for Rovo — clear the section
+                const relatedItems = detailPanel.querySelector('.related-items');
+                if (relatedItems) relatedItems.innerHTML = '<p style="color:#666;padding:1rem;">No related content available</p>';
             } else if (source === 'ohss' || source === 'jira') {
                 // Format the description with proper line breaks and styling
                 const description = resultData.description || 'No description available';
@@ -6343,6 +6641,12 @@ function addResultClickListeners() {
                 resultData = window.lastSearchResults.sop.sops.find(doc => doc.url === sopUrl);
             }
             sourceType = 'sop';
+        } else if (source === 'rovo') {
+            const rovoKey = resultItem.getAttribute('data-rovo-key');
+            if (rovoKey && window.lastSearchResults?.rovo?.issues) {
+                resultData = window.lastSearchResults.rovo.issues.find(issue => issue.key === rovoKey);
+            }
+            sourceType = 'rovo';
         }
 
         if (resultData) {
@@ -6695,4 +6999,313 @@ if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', initSettingsPage);
 } else {
     initSettingsPage();
+}
+
+// ============================================================================
+// Slack Channel Filter Functions
+// ============================================================================
+
+const COMMON_SLACK_CHANNELS = [
+    'forum-rosa-support',
+    'openshift-sre',
+    'team-sre',
+    'sre-alerts',
+    'sre-general',
+    'rosa-sre',
+    'osd-sre',
+    'forum-managed-openshift',
+    'ask-sre',
+];
+
+// ============================================================================
+// AI SUMMARY + CHAT
+// ============================================================================
+
+let _aiCaseNumber   = null;
+let _aiCaseData     = null;
+let _aiChatHistory  = [];
+let _aiSummaryHtml  = '';
+
+function resetAISummaryPanel() {
+    _aiCaseNumber  = null;
+    _aiCaseData    = null;
+    _aiChatHistory = [];
+    _aiSummaryHtml = '';
+    const trigger    = document.getElementById('ai-summary-trigger');
+    const result     = document.getElementById('ai-summary-result');
+    const chatBox    = document.getElementById('ai-chat-box');
+    const btn        = document.getElementById('ai-summary-btn');
+    const msgs       = document.getElementById('ai-chat-messages');
+    const regenBar   = document.getElementById('ai-regenerate-bar');
+    if (trigger)  trigger.style.display = 'block';
+    if (result)   { result.style.display = 'none'; result.innerHTML = ''; }
+    if (chatBox)  chatBox.style.display  = 'none';
+    if (btn)      { btn.disabled = false; btn.textContent = '🤖 Generate AI Summary'; }
+    if (msgs)     msgs.innerHTML = '';
+    if (regenBar) regenBar.remove();
+}
+
+function setAIContext(caseNumber, caseData) {
+    if (_aiCaseNumber !== caseNumber) {
+        resetAISummaryPanel();
+        _aiCaseNumber = caseNumber;
+        _aiCaseData   = caseData;
+    }
+}
+
+async function triggerAISummary() {
+    if (!_aiCaseNumber) {
+        alert('Please open an SFDC case first.');
+        return;
+    }
+    const btn     = document.getElementById('ai-summary-btn');
+    const result  = document.getElementById('ai-summary-result');
+    const trigger = document.getElementById('ai-summary-trigger');
+
+    btn.disabled = true;
+    btn.textContent = '⏳ Analyzing with Claude…';
+    if (result) { result.style.display = 'block'; result.innerHTML = '<div class="ai-summary-loading"><div class="loading-spinner"></div><p>Generating AI summary — this may take up to 30 seconds…</p></div>'; }
+
+    try {
+        const resp = await fetch('/api/ai/case-summary', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            credentials: 'include',
+            body: JSON.stringify({
+                case_number: _aiCaseNumber,
+                case_data:   _aiCaseData || {}
+            })
+        });
+        const data = await resp.json();
+
+        if (data.timeout) {
+            result.innerHTML = '<p style="color:#fc8181;">⏱ Claude timed out. <button onclick="triggerAISummary()">🔄 Retry</button></p>';
+            btn.disabled = false;
+            btn.textContent = '🤖 Generate AI Summary';
+            return;
+        }
+        if (data.error && !data.html) {
+            result.innerHTML = `<p style="color:#fc8181;">⚠ ${escapeHtml(data.error)}</p>`;
+            btn.disabled = false;
+            btn.textContent = '🤖 Retry AI Summary';
+            return;
+        }
+
+        _aiSummaryHtml = data.html || '';
+
+        // Build linked resources bar
+        let linkedHtml = '';
+        const lr = data.linked_resources || {};
+        const kcsLinks  = lr.kcs      || [];
+        const jiraLinks = lr.jira     || [];
+        const bzLinks   = lr.bugzilla || [];
+        const hasLinks  = kcsLinks.length + jiraLinks.length + bzLinks.length > 0;
+        if (hasLinks) {
+            linkedHtml = '<div class="ai-linked-bar"><strong>🔗 Linked in Case:</strong> ';
+            kcsLinks.slice(0,5).forEach(url => {
+                const id = (url.match(/\/(\d+)/) || [])[1] || 'KCS';
+                linkedHtml += `<a href="${url}" target="_blank" class="ai-pill ai-kcs-pill">📚 KCS-${id}</a> `;
+            });
+            jiraLinks.slice(0,6).forEach(j => {
+                linkedHtml += `<a href="${escapeHtml(j.url)}" target="_blank" class="ai-pill ai-jira-pill">🔧 ${escapeHtml(j.key)}</a> `;
+            });
+            bzLinks.slice(0,4).forEach(b => {
+                linkedHtml += `<a href="${escapeHtml(b.url)}" target="_blank" class="ai-pill ai-bz-pill">🐛 BZ-${b.id}</a> `;
+            });
+            linkedHtml += '</div>';
+        }
+
+        const modeColor = data.mode === 'closed' ? '#68d391' : '#f6ad55';
+        const modeLabel = data.mode === 'closed' ? '📋 Closed Case — Post-mortem Summary' : '🔄 Open Case — Analysis & Suggestions';
+
+        result.innerHTML = `
+            <div class="ai-mode-banner" style="background:${modeColor}18; border-left:4px solid ${modeColor}; padding:8px 12px; margin-bottom:12px; border-radius:4px;">
+                <strong style="color:${modeColor};">${modeLabel}</strong>
+                <span style="color:#718096; font-size:11px; margin-left:8px;">Status: ${escapeHtml(data.status || '')}</span>
+            </div>
+            ${linkedHtml}
+            <div class="ai-summary-body">${data.html || ''}</div>`;
+
+        if (trigger) trigger.style.display = 'none';
+        const chatBox = document.getElementById('ai-chat-box');
+        if (chatBox) chatBox.style.display = 'block';
+
+        btn.textContent = '🔄 Regenerate Summary';
+        btn.disabled = false;
+
+        const existingRegen = document.getElementById('ai-regenerate-bar');
+        if (existingRegen) existingRegen.remove();
+        result.insertAdjacentHTML('afterend', `
+            <div id="ai-regenerate-bar" style="padding: 8px 0 4px;">
+                <button class="ai-summary-btn" style="font-size:12px; padding:6px 14px;" onclick="triggerAISummary()">🔄 Regenerate</button>
+            </div>`);
+
+    } catch (err) {
+        result.innerHTML = `<p style="color:#fc8181;">⚠ Request failed: ${escapeHtml(err.message)}</p>`;
+        btn.disabled = false;
+        btn.textContent = '🤖 Retry AI Summary';
+    }
+}
+
+async function sendAIChat() {
+    const input   = document.getElementById('ai-chat-input');
+    const sendBtn = document.getElementById('ai-chat-send');
+    const msgs    = document.getElementById('ai-chat-messages');
+    if (!input || !msgs) return;
+
+    const question = input.value.trim();
+    if (!question) return;
+
+    const userBubble = document.createElement('div');
+    userBubble.className = 'ai-chat-msg-user';
+    userBubble.textContent = question;
+    msgs.appendChild(userBubble);
+
+    const useChai   = document.getElementById('aiSrcChai')?.checked   ?? false;
+    const useClaude = document.getElementById('aiSrcClaude')?.checked ?? true;
+    if (!useChai && !useClaude) {
+        alert('Please select at least one AI source (Chai AI or Claude).');
+        return;
+    }
+    const sources = [];
+    if (useChai)   sources.push('chai');
+    if (useClaude) sources.push('claude');
+
+    const clusterKeywords = ['check', 'cluster', 'node', 'pod', 'healthy', 'health', 'investigate', 'diagnose', 'logged in', 'login to cluster', 'i had login'];
+    const isClusterQ = clusterKeywords.some(k => question.toLowerCase().includes(k));
+
+    // Placeholder bubbles — only for selected sources
+    function _makeSourceLabel(icon, label, color) {
+        const tag = document.createElement('div');
+        tag.style.cssText = `font-size:11px;font-weight:600;color:${color};margin-bottom:4px;display:flex;align-items:center;gap:5px;`;
+        tag.innerHTML = `<span>${icon}</span><span>${label}</span>`;
+        return tag;
+    }
+    function _thinkingSpinner(label) {
+        const wrap = document.createElement('div');
+        wrap.className = 'ai-chat-msg-ai';
+        wrap.style.cssText = 'border-left:3px solid #805ad5;';
+        wrap.appendChild(_makeSourceLabel('🐼', label, '#805ad5'));
+        const spin = document.createElement('div');
+        spin.style.cssText = 'display:flex;align-items:center;gap:6px;color:#718096;font-size:13px;';
+        spin.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" style="animation:ai-spin 1s linear infinite;flex-shrink:0"><circle cx="12" cy="12" r="10" stroke="#805ad5" stroke-width="3" fill="none" stroke-dasharray="31 63" stroke-linecap="round"/></svg><span>Thinking…</span>';
+        wrap.appendChild(spin);
+        return wrap;
+    }
+
+    const chaiPlaceholder = useChai ? _thinkingSpinner('Chai AI (MCS Persona)') : null;
+    const claudePlaceholder = useClaude ? document.createElement('div') : null;
+    if (claudePlaceholder) {
+        claudePlaceholder.className = 'ai-chat-msg-ai';
+        claudePlaceholder.style.cssText = 'border-left:3px solid #3182ce;';
+        claudePlaceholder.appendChild(_makeSourceLabel('🤖', 'Claude', '#3182ce'));
+        const claudeWaiting = document.createElement('span');
+        claudeWaiting.style.cssText = 'color:#718096;font-size:13px;';
+        claudeWaiting.textContent = isClusterQ
+            ? '🖥️ Running cluster investigation (oc commands)…'
+            : '🔍 Searching SOPs & KCS…';
+        claudePlaceholder.appendChild(claudeWaiting);
+    }
+
+    if (chaiPlaceholder)   msgs.appendChild(chaiPlaceholder);
+    if (claudePlaceholder) msgs.appendChild(claudePlaceholder);
+    msgs.scrollTop = msgs.scrollHeight;
+
+    input.value = '';
+    sendBtn.disabled = true;
+
+    const controller = new AbortController();
+    const fetchTimeout = setTimeout(() => controller.abort(), 240000); // 4-minute client-side guard
+
+    try {
+        const resp = await fetch('/api/ai/case-chat', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            credentials: 'include',
+            signal: controller.signal,
+            body: JSON.stringify({
+                case_number:  _aiCaseNumber,
+                case_summary: _aiSummaryHtml,
+                messages:     _aiChatHistory,
+                question:     question,
+                sources:      sources
+            })
+        });
+        clearTimeout(fetchTimeout);
+        const data = await resp.json();
+
+        const errTarget = claudePlaceholder || chaiPlaceholder;
+        if (data.error) {
+            if (chaiPlaceholder && chaiPlaceholder !== errTarget) chaiPlaceholder.remove();
+            if (errTarget) {
+                errTarget.innerHTML = '';
+                errTarget.style.color = '#fc8181';
+                errTarget.style.borderLeft = '3px solid #fc8181';
+                errTarget.textContent = '⚠ ' + data.error;
+            }
+        } else {
+            // --- Chai AI bubble ---
+            if (chaiPlaceholder) {
+                chaiPlaceholder.innerHTML = '';
+                chaiPlaceholder.style.borderLeft = '3px solid #805ad5';
+                chaiPlaceholder.appendChild(_makeSourceLabel('🐼', 'Chai AI (MCS Persona)', '#805ad5'));
+                if (data.chai_answer) {
+                    const chaiBody = document.createElement('div');
+                    chaiBody.innerHTML = data.chai_answer;
+                    chaiPlaceholder.appendChild(chaiBody);
+                } else {
+                    const noChat = document.createElement('span');
+                    noChat.style.cssText = 'color:#718096;font-size:13px;font-style:italic;';
+                    noChat.textContent = 'Chai AI did not return a response.';
+                    chaiPlaceholder.appendChild(noChat);
+                }
+            }
+
+            // --- Claude bubble ---
+            if (claudePlaceholder) {
+                claudePlaceholder.innerHTML = '';
+                claudePlaceholder.style.borderLeft = '3px solid #3182ce';
+                claudePlaceholder.appendChild(_makeSourceLabel('🤖', 'Claude', '#3182ce'));
+                if (data.claude_answer) {
+                    const claudeBody = document.createElement('div');
+                    claudeBody.innerHTML = data.claude_answer;
+                    claudePlaceholder.appendChild(claudeBody);
+
+                    if (data.refs && data.refs.length > 0) {
+                        const refBar = document.createElement('div');
+                        refBar.className = 'ai-chat-refs';
+                        refBar.innerHTML = '<span style="font-size:11px;color:#718096;">Sources: </span>' +
+                            data.refs.map(r => `<a href="${r.url || '#'}" target="_blank" class="ai-pill ${r.type === 'kcs' ? 'ai-kcs-pill' : 'ai-sop-pill'}">${escapeHtml((r.title || 'Ref').substring(0, 35))}</a>`).join(' ');
+                        claudePlaceholder.appendChild(refBar);
+                    }
+
+                    _aiChatHistory.push({role: 'user', content: question});
+                    _aiChatHistory.push({role: 'assistant', content: data.claude_answer});
+                } else {
+                    const noClaude = document.createElement('span');
+                    noClaude.style.cssText = 'color:#718096;font-size:13px;font-style:italic;';
+                    noClaude.textContent = 'Claude did not return a response.';
+                    claudePlaceholder.appendChild(noClaude);
+                }
+            }
+        }
+        msgs.scrollTop = msgs.scrollHeight;
+    } catch (err) {
+        clearTimeout(fetchTimeout);
+        if (chaiPlaceholder) chaiPlaceholder.remove();
+        const errTarget = claudePlaceholder || document.createElement('div');
+        if (!claudePlaceholder) msgs.appendChild(errTarget);
+        errTarget.className  = errTarget.className || 'ai-chat-msg-ai';
+        errTarget.innerHTML  = '';
+        errTarget.style.color       = '#fc8181';
+        errTarget.style.borderLeft  = '3px solid #fc8181';
+        const msg = err.name === 'AbortError'
+            ? '⚠ Cluster investigation timed out (>4 min). Try a more specific question.'
+            : '⚠ Request failed: ' + err.message;
+        errTarget.textContent = msg;
+        msgs.scrollTop = msgs.scrollHeight;
+    } finally {
+        sendBtn.disabled = false;
+        input.focus();
+    }
 }

@@ -881,6 +881,91 @@ def search_jira(query: str, max_results: int = 20, config: Dict = None, created_
 
 
 # ============================================================================
+# Rovo Semantic Search
+# ============================================================================
+
+ROVO_MCP_URL = ""
+
+def search_rovo(query: str, max_results: int = 10, config: Dict = None) -> Dict:
+    """Search Jira/Confluence using Atlassian Rovo semantic search via MCP."""
+    if config is None:
+        config = {}
+    rovo_token = config.get("rovo_oauth_token", "")
+    if not rovo_token:
+        return {"issues": [], "total": 0, "error": "Rovo not connected"}
+
+    rovo_url = config.get("rovo_mcp_url", "") or ROVO_MCP_URL
+    if not rovo_url:
+        return {"issues": [], "total": 0, "error": "Rovo MCP URL not configured. Set it in Settings → Rovo."}
+    rovo_cloud_id = config.get("rovo_cloud_id", "")
+    if not rovo_cloud_id:
+        return {"issues": [], "total": 0, "error": "Atlassian Cloud ID not configured. Set it in Settings → Rovo."}
+
+    headers = {
+        "Authorization": f"Bearer {rovo_token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+    }
+    try:
+        init_resp = requests.post(rovo_url, headers=headers, json={
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                       "clientInfo": {"name": "seekrai", "version": "1.0"}},
+        }, timeout=10)
+        if init_resp.status_code == 401:
+            return {"issues": [], "total": 0, "error": "rovo_token_expired"}
+        init_resp.raise_for_status()
+        session_id = init_resp.headers.get("mcp-session-id", "")
+        if not session_id:
+            return {"issues": [], "total": 0, "error": "No MCP session ID from Rovo"}
+
+        headers["mcp-session-id"] = session_id
+        resp = requests.post(rovo_url, headers=headers, json={
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "search", "arguments": {
+                "query": query,
+                "cloudId": rovo_cloud_id,
+                "targetApp": "JIRA",
+                "limit": max(10, max_results),
+                "mode": "STANDARD",
+            }},
+        }, timeout=30)
+        resp.raise_for_status()
+
+        issues = []
+        raw = resp.content.decode("utf-8")
+        lines = [l for l in raw.splitlines() if l.startswith("data:")]
+        candidates = [json.loads(l[5:].strip()) for l in lines] if lines else [resp.json()]
+        for obj in candidates:
+            for item in obj.get("result", {}).get("content", []):
+                if item.get("type") != "text":
+                    continue
+                try:
+                    payload = json.loads(item["text"])
+                except Exception:
+                    continue
+                for r in payload.get("results", []):
+                    if r.get("type") != "issue":
+                        continue
+                    key = r.get("issueKey", "")
+                    issues.append({
+                        "key": key,
+                        "summary": r.get("title", ""),
+                        "snippet": r.get("snippet", ""),
+                        "url": r.get("url", f"https://redhat.atlassian.net/browse/{key}"),
+                        "last_modified": r.get("lastModified", ""),
+                        "issue_type": r.get("issueType", ""),
+                        "project": key.split("-")[0] if "-" in key else "",
+                    })
+
+        return {"issues": issues, "total": len(issues)}
+
+    except Exception as e:
+        app.logger.error(f"❌ Rovo search error: {e}")
+        return {"issues": [], "total": 0, "error": str(e)}
+
+
+# ============================================================================
 # KCS Functions
 # ============================================================================
 
@@ -2099,7 +2184,7 @@ def search_all(query: str, max_results_per_source: int = 20, slack_channels: Lis
         if config is None:
             config = {}
 
-        with ThreadPoolExecutor(max_workers=6) as executor:
+        with ThreadPoolExecutor(max_workers=7) as executor:
             # Submit all searches concurrently with config
             jira_future = executor.submit(search_jira, query, max_results_per_source, config, jira_created_after, jira_created_before, custom_jql, search_logic)
             sfdc_future = executor.submit(search_sfdc, query, max_results_per_source, config)
@@ -2107,6 +2192,7 @@ def search_all(query: str, max_results_per_source: int = 20, slack_channels: Lis
             kcs_future = executor.submit(search_kcs, query, max_results_per_source, config)
             sop_future = executor.submit(search_sop, query, max_results_per_source, config)
             gitlab_future = executor.submit(search_gitlab, query, max_results_per_source, config)
+            rovo_future = executor.submit(search_rovo, query, max_results_per_source, config)
 
             # Get results with error handling for each
             try:
@@ -2147,6 +2233,12 @@ def search_all(query: str, max_results_per_source: int = 20, slack_channels: Lis
             except Exception as e:
                 print(f"❌ GitLab search exception: {e}")
                 gitlab_results = {"results": [], "total": 0, "error": str(e)}
+
+            try:
+                rovo_results = rovo_future.result()
+            except Exception as e:
+                print(f"❌ Rovo search exception: {e}")
+                rovo_results = {"issues": [], "total": 0, "error": str(e)}
 
         # Merge ask-sre SOP results into GitHub/KCS by source type
         # Both local_ops_sop (openshift/ops-sop) and managed_openshift_docs are GitHub repos
@@ -2232,6 +2324,7 @@ def search_all(query: str, max_results_per_source: int = 20, slack_channels: Lis
 
         return {
             "jira": jira_results,
+            "rovo": rovo_results,
             "sfdc": sfdc_results,
             "slack": slack_results,
             "kcs": kcs_results,
@@ -2450,6 +2543,7 @@ def search():
             return jsonify({
                 "error": "Invalid request: No JSON data",
                 "jira": {"issues": [], "total": 0},
+                "rovo": {"issues": [], "total": 0},
                 "sfdc": {"cases": [], "total": 0},
                 "slack": {"messages": [], "total": 0, "channels": COMMON_SLACK_CHANNELS},
                 "kcs": {"articles": [], "total": 0},
@@ -2472,6 +2566,7 @@ def search():
             return jsonify({
                 "error": "Please enter a search query",
                 "jira": {"issues": [], "total": 0},
+                "rovo": {"issues": [], "total": 0},
                 "sfdc": {"cases": [], "total": 0},
                 "slack": {"messages": [], "total": 0, "channels": COMMON_SLACK_CHANNELS},
                 "kcs": {"articles": [], "total": 0},
@@ -4493,6 +4588,93 @@ def get_case_escalations(case_number):
                 case_id = case_edges[0].get("node", {}).get("Id", "")
                 app.logger.info(f"  📍 Case ID: {case_id}")
 
+                # Step 2: Query for external links using the case ID
+                # Try different field name patterns since the schema is unclear
+                graphql_query = """
+                query GetExternalLinks($caseId: ID!) {
+                  redhat_support_uiapi {
+                    query {
+                      RedHatSupportExternalLink__c(where: { Case__c: { eq: $caseId } }, first: 20) {
+                        edges {
+                          node {
+                            Id
+                            ExternalId { value }
+                            ExternalLinkName { value }
+                            ExternalURL { value }
+                            ExternalType { value }
+                            Status { value }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+                """
+
+                graphql_resp = requests.post(
+                    "https://graphql.redhat.com",
+                    headers={
+                        "Authorization": f"Bearer {access_token}",
+                        "Content-Type": "application/json",
+                        "apollographql-client-name": "seekr-ai",
+                        "apollographql-client-version": "1.0.0",
+                        "Apollo-Require-Preflight": "true"
+                    },
+                    json={
+                        "query": graphql_query,
+                        "variables": {"caseId": case_id}
+                    },
+                    timeout=30
+                )
+
+                if graphql_resp.status_code == 200:
+                    graphql_result = graphql_resp.json()
+
+                    if "errors" in graphql_result:
+                        app.logger.error(f"  ❌ GraphQL errors: {graphql_result['errors']}")
+                    else:
+                        # Check for external links from the separate query
+                        tracker_edges = graphql_result.get("data", {}).get("redhat_support_uiapi", {}).get("query", {}).get("RedHatSupportExternalLink__c", {}).get("edges", [])
+
+                        app.logger.info(f"  ✅ GraphQL found {len(tracker_edges)} external links")
+
+                        for tracker_edge in tracker_edges:
+                            tracker_node = tracker_edge.get("node", {})
+                            external_id = tracker_node.get("ExternalId", {}).get("value", "")
+                            external_name = tracker_node.get("ExternalLinkName", {}).get("value", "")
+                            external_url = tracker_node.get("ExternalURL", {}).get("value", "")
+                            external_type = tracker_node.get("ExternalType", {}).get("value", "")
+                            status = tracker_node.get("Status", {}).get("value", "")
+
+                            # Extract JIRA ticket ID from the URL (e.g., RFE-9044 from https://redhat.atlassian.net/browse/RFE-9044)
+                            resource_key = None
+                            if external_url:
+                                # Parse URL to extract ticket ID
+                                # Format: https://redhat.atlassian.net/browse/TICKET-ID or https://issues.redhat.com/browse/TICKET-ID
+                                match = re.search(r'/browse/([A-Z]+-\d+)', external_url)
+                                if match:
+                                    resource_key = match.group(1)
+                                else:
+                                    # Fallback to external_name if URL parsing fails
+                                    resource_key = external_name or external_id
+                            else:
+                                resource_key = external_name or external_id
+
+                            if resource_key and external_url:
+                                external_trackers.append({
+                                    'resourceKey': resource_key,
+                                    'resourceURL': external_url,
+                                    'title': resource_key,  # Use ticket ID as title
+                                    'status': status or 'Unknown',
+                                    'system': external_type or 'Jira'
+                                })
+                                app.logger.info(f"    ✓ {resource_key} ({external_type or 'External Link'}): {external_url}")
+                else:
+                    try:
+                        error_body = graphql_resp.json()
+                        app.logger.error(f"  ❌ GraphQL HTTP {graphql_resp.status_code}: {error_body}")
+                    except:
+                        app.logger.error(f"  ❌ GraphQL HTTP {graphql_resp.status_code}: {graphql_resp.text[:300]}")
         except Exception as e:
             app.logger.warning(f"  ⚠️ Failed to fetch from Salesforce GraphQL: {e}")
             import traceback
