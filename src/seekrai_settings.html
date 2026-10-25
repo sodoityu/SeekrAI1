@@ -796,6 +796,48 @@
                 </div>
             </div>
 
+                <!-- Skills Folder Card -->
+                <div class="settings-card" id="skills-config-section" style="margin-top:1.5rem;">
+                    <div class="card-header">
+                        <div class="card-title-group">
+                            <h3 class="card-title">Skills / Runbooks</h3>
+                            <span class="label-hint" style="font-size:0.8em;color:#6b7280;">(Claude Chat Instructions)</span>
+                        </div>
+                        <p class="card-description">
+                            Skills are markdown instruction files (SKILL.md) that automatically load as system-prompt context when you chat with Claude.
+                            For example, the <strong>mcs-expertise</strong> skill activates when you ask about must-gather analysis, and <strong>rosa-backplane</strong> activates for live cluster investigations.
+                            Add your own skills by dropping a <code>&lt;name&gt;/SKILL.md</code> file into the configured folder.
+                        </p>
+                    </div>
+                    <div class="card-body">
+                        <div class="form-group">
+                            <label for="skillsPath" class="form-label">
+                                Skills Folder Path
+                                <span class="label-hint">(leave blank to use default)</span>
+                            </label>
+                            <input type="text" id="skillsPath" name="skillsPath" class="form-input"
+                                placeholder="e.g. /home/user/my-skills" />
+                            <p class="field-help" id="skillsDefaultPathHint">Default: <code id="skillsDefaultPathDisplay"></code></p>
+                        </div>
+
+                        <div class="form-actions">
+                            <button type="button" class="btn btn-primary" id="saveSkillsPathBtn">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+                                    <polyline points="17 21 17 13 7 13 7 21"/>
+                                    <polyline points="7 3 7 8 15 8"/>
+                                </svg>
+                                Save Path
+                            </button>
+                        </div>
+                        <div id="skillsPathStatusMessage" class="status-message"></div>
+
+                        <div id="skillsListSection" style="margin-top:1.5rem;">
+                            <h4 style="font-size:0.95em;font-weight:600;margin-bottom:0.5rem;color:#374151;">Loaded Skills</h4>
+                            <div id="skillsList" style="font-size:0.88em;color:#6b7280;">Loading...</div>
+                        </div>
+                    </div>
+                </div>
 
         </div>
     </div>
@@ -1025,6 +1067,55 @@
             btn.disabled = false;
             btn.textContent = 'Test Connection';
             statusEl.style.display = 'block';
+        }
+    });
+    // ─── Skills Settings ─────────────────────────────────────────────────────
+    (async function initSkillsSettings() {
+        try {
+            const r = await fetch('/api/settings/skills', {credentials: 'include'});
+            if (!r.ok) return;
+            const d = await r.json();
+            const pathEl = document.getElementById('skillsPath');
+            const defaultEl = document.getElementById('skillsDefaultPathDisplay');
+            if (pathEl && d.skills_path) pathEl.value = d.skills_path;
+            if (defaultEl) defaultEl.textContent = d.default_path || '';
+            renderSkillsList(d.skills || []);
+        } catch(e) { console.warn('Skills settings load error:', e); }
+    })();
+
+    function renderSkillsList(skills) {
+        const el = document.getElementById('skillsList');
+        if (!el) return;
+        if (!skills.length) { el.textContent = 'No skills found in configured path.'; return; }
+        el.innerHTML = skills.map(s => `
+            <div style="padding:0.4rem 0;border-bottom:1px solid #f3f4f6;">
+                <strong style="color:#111827;">${s.name}</strong>
+                <span style="margin-left:0.5rem;background:${s.source==='built-in'?'#e0f2fe':'#f0fdf4'};color:${s.source==='built-in'?'#0369a1':'#166534'};font-size:0.75em;padding:1px 6px;border-radius:4px;">${s.source==='built-in'?'built-in':'custom'}</span>
+                ${s.description ? `<p style="margin:2px 0 0 0;color:#6b7280;font-size:0.85em;">${s.description}</p>` : ''}
+            </div>`).join('');
+    }
+
+    document.getElementById('saveSkillsPathBtn')?.addEventListener('click', async () => {
+        const statusEl = document.getElementById('skillsPathStatusMessage');
+        const path = document.getElementById('skillsPath')?.value?.trim() || '';
+        try {
+            const r = await fetch('/api/settings/skills', {
+                method: 'POST', credentials: 'include',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({skills_path: path}),
+            });
+            const d = await r.json();
+            statusEl.style.display = 'block';
+            if (r.ok && d.success) {
+                statusEl.innerHTML = '<p class="success">✅ Skills path saved. Refreshing skill list...</p>';
+                const r2 = await fetch('/api/settings/skills', {credentials: 'include'});
+                if (r2.ok) { const d2 = await r2.json(); renderSkillsList(d2.skills || []); }
+            } else {
+                statusEl.innerHTML = `<p class="error">❌ ${d.message || 'Save failed'}</p>`;
+            }
+        } catch(e) {
+            statusEl.style.display = 'block';
+            statusEl.innerHTML = `<p class="error">❌ Error: ${e.message}</p>`;
         }
     });
     </script>

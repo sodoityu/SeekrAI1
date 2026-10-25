@@ -3214,3 +3214,4 @@ input[type="email"][readonly].form-input:focus {
 }
 .ai-chat-send:hover:not(:disabled) { background: #b00000; }
 .ai-chat-send:disabled { opacity: 0.6; cursor: not-allowed; }
+

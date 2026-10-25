@@ -6,14 +6,23 @@ To add a new agent:
 2. Add a system prompt constant (or point to a skill file name).
 3. Append an entry to AGENT_REGISTRY (order = priority; first match wins).
 
+Skills can also be auto-discovered from a configured skills folder:
+  - Drop a <name>/SKILL.md into the configured skills directory.
+  - The YAML frontmatter must include 'trigger' keywords for auto-matching.
+  - Call resolve_agent(question, skills_dir=<path>) to include discovered skills.
+
 The server's _call_claude_for_chat() calls resolve_agent(question) and uses
 call_claude_with_tools() with the returned agent's system prompt.
 """
 
 import os
+import re
 import logging
 
 logger = logging.getLogger(__name__)
+
+# Default skills directory: SeekrAI1/skills/ next to this file.
+_DEFAULT_SKILLS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "skills")
 
 # ---------------------------------------------------------------------------
 # Skill file loader
@@ -21,27 +30,135 @@ logger = logging.getLogger(__name__)
 
 _SKILL_CACHE: dict = {}
 
-def load_skill(skill_name: str) -> str:
-    """Load ~/.claude/skills/<name>/SKILL.md, strip YAML frontmatter, cache."""
-    if skill_name in _SKILL_CACHE:
-        return _SKILL_CACHE[skill_name]
-    path = os.path.expanduser(f"~/.claude/skills/{skill_name}/SKILL.md")
-    try:
-        content = open(path).read()
-        if content.startswith("---"):
-            end = content.find("\n---", 3)
-            if end != -1:
-                content = content[end + 4:].lstrip()
-        _SKILL_CACHE[skill_name] = content
-        logger.info(f"Loaded skill: {skill_name} ({len(content)} chars)")
-        return content
-    except FileNotFoundError:
-        logger.warning(f"Skill not found: {path}")
-        return ""
+
+def _skill_paths(skill_name: str, skills_dir: str | None = None) -> list[str]:
+    """Return candidate paths to check for a skill, preferred first."""
+    candidates = []
+    if skills_dir:
+        candidates.append(os.path.join(skills_dir, skill_name, "SKILL.md"))
+    candidates.append(os.path.join(_DEFAULT_SKILLS_DIR, skill_name, "SKILL.md"))
+    candidates.append(os.path.expanduser(f"~/.claude/skills/{skill_name}/SKILL.md"))
+    return candidates
+
+
+def load_skill(skill_name: str, skills_dir: str | None = None) -> str:
+    """Load a skill's SKILL.md, strip YAML frontmatter, cache per (name, dir)."""
+    cache_key = (skill_name, skills_dir)
+    if cache_key in _SKILL_CACHE:
+        return _SKILL_CACHE[cache_key]
+    for path in _skill_paths(skill_name, skills_dir):
+        try:
+            content = open(path).read()
+            if content.startswith("---"):
+                end = content.find("\n---", 3)
+                if end != -1:
+                    content = content[end + 4:].lstrip()
+            _SKILL_CACHE[cache_key] = content
+            logger.info(f"Loaded skill '{skill_name}' from {path} ({len(content)} chars)")
+            return content
+        except FileNotFoundError:
+            continue
+    logger.warning(f"Skill not found: {skill_name}")
+    return ""
+
+
+def _parse_skill_frontmatter(text: str) -> dict:
+    """
+    Parse minimal YAML-like frontmatter between --- delimiters.
+    Returns dict with 'name', 'description', 'trigger' keys (all str).
+    Only handles simple key: value and multiline block scalars (>).
+    """
+    if not text.startswith("---"):
+        return {}
+    end = text.find("\n---", 3)
+    if end == -1:
+        return {}
+    fm_text = text[3:end].strip()
+    result: dict = {}
+    key = None
+    block_lines: list[str] = []
+
+    def flush_block():
+        if key and block_lines:
+            result[key] = " ".join(block_lines).strip()
+
+    for line in fm_text.splitlines():
+        if line and not line[0].isspace():
+            flush_block()
+            block_lines = []
+            if ":" in line:
+                k, _, v = line.partition(":")
+                key = k.strip()
+                v = v.strip()
+                if v and v != ">":
+                    result[key] = v
+                # if v == ">" or v == "": block mode, collected via block_lines
+        elif line.startswith("  ") and key:
+            block_lines.append(line.strip())
+
+    flush_block()
+    return result
+
+
+def scan_skills_folder(skills_dir: str) -> list[dict]:
+    """
+    Scan skills_dir for <name>/SKILL.md files.
+    Returns list of dicts: {name, description, trigger_text, trigger_keywords, path}.
+    """
+    skills = []
+    if not skills_dir or not os.path.isdir(skills_dir):
+        return skills
+    for entry in sorted(os.scandir(skills_dir), key=lambda e: e.name):
+        if not entry.is_dir():
+            continue
+        md_path = os.path.join(entry.path, "SKILL.md")
+        if not os.path.exists(md_path):
+            continue
+        try:
+            raw = open(md_path).read()
+        except OSError:
+            continue
+        fm = _parse_skill_frontmatter(raw)
+        name = fm.get("name") or entry.name
+        trigger_text = fm.get("trigger", "")
+        # Extract keyword section before "DO NOT TRIGGER"
+        trigger_positive = re.split(r"DO NOT TRIGGER", trigger_text, flags=re.IGNORECASE)[0]
+        # Pull meaningful words (4+ chars, skip common stop words)
+        _STOP = {"when", "user", "asks", "asks", "also", "that", "with", "this",
+                 "from", "have", "will", "uses", "used", "make", "into", "about",
+                 "asks", "their", "using", "invokes", "mention", "mentions"}
+        keywords = [
+            w.lower().strip(",.;:'\"()") for w in trigger_positive.split()
+            if len(w) >= 4 and w.lower().strip(",.;:'\"()") not in _STOP
+        ]
+        skills.append({
+            "name": name,
+            "description": fm.get("description", ""),
+            "trigger_text": trigger_text,
+            "trigger_keywords": list(dict.fromkeys(keywords)),  # deduplicate, preserve order
+            "path": md_path,
+            "skills_dir": skills_dir,
+        })
+    return skills
+
+
+def _make_dynamic_detect(skill_name: str, keywords: list[str]):
+    """Return a detection function that matches if any keyword appears in the question."""
+    kws = [k.lower() for k in keywords if k]
+    slug = skill_name.lower().replace("-", " ")
+
+    def _detect(question: str) -> bool:
+        q = question.lower()
+        # Always match if the skill name is mentioned directly
+        if skill_name.lower() in q or slug in q:
+            return True
+        return any(kw in q for kw in kws)
+
+    return _detect
 
 
 # ---------------------------------------------------------------------------
-# Detection functions
+# Detection functions (built-in agents)
 # ---------------------------------------------------------------------------
 
 def _is_must_gather(question: str) -> bool:
@@ -55,9 +172,15 @@ def _is_must_gather(question: str) -> bool:
 
 def _is_rhobs(question: str) -> bool:
     q = question.lower()
-    has_rhobs = any(k in q for k in ['rhobs', 'osdctl rhobs', 'rhobs logs', 'rhobs search'])
-    has_log   = any(k in q for k in ['log', 'error', 'search', 'query', 'find'])
-    return has_rhobs and has_log
+    # Explicit RHOBS keyword
+    if any(k in q for k in ['rhobs', 'osdctl rhobs']):
+        return any(k in q for k in ['log', 'error', 'search', 'query', 'find'])
+    # HCP-specific log queries (oc logs doesn't work on HCP — implies RHOBS)
+    has_hcp  = any(k in q for k in ['hcp', 'hosted control plane', 'management cluster', 'hypershift'])
+    has_log  = any(k in q for k in ['log', 'logs'])
+    has_comp = any(k in q for k in ['oauth', 'upgrade', 'machine-approver', 'machineapprover',
+                                     'mhc', 'machinehealthcheck', 'drain', 'csr', 'node'])
+    return has_hcp and has_log and has_comp
 
 
 def _is_cluster_investigation(question: str) -> bool:
@@ -154,8 +277,9 @@ Use HTML formatting (<p>, <ul>, <li>, <code>, <strong>) for your final answer �
 # Each entry:
 #   name        : str  — label used in logs
 #   detect      : callable(question: str) -> bool
-#   skill       : str | None  — skill file name to load as system prompt
-#   system      : str | None  — inline system prompt (used if skill missing/absent)
+#   skill       : str | None  — skill file name (loaded via load_skill())
+#   preamble    : str  — prepended before skill content
+#   system      : str | None  — inline system prompt (used if skill missing)
 #   max_tokens  : int
 # ---------------------------------------------------------------------------
 
@@ -178,51 +302,116 @@ AGENT_REGISTRY = [
     {
         "name": "must-gather",
         "detect": _is_must_gather,
-        "skill": "mcs-expertise",     # loads ~/.claude/skills/mcs-expertise/SKILL.md
-        "preamble": MUST_GATHER_PREAMBLE,  # prepended before skill content
-        "system": None,               # no inline fallback; falls back to plain chat if skill missing
+        "skill": "mcs-expertise",
+        "preamble": MUST_GATHER_PREAMBLE,
+        "system": None,
         "max_tokens": 4000,
     },
     {
         "name": "rhobs",
         "detect": _is_rhobs,
-        "skill": None,
+        "skill": "rhobs",                          # loads skills/rhobs/SKILL.md
         "preamble": "",
-        "system": RHOBS_INVESTIGATOR_SYSTEM_PROMPT,
+        "system": RHOBS_INVESTIGATOR_SYSTEM_PROMPT, # fallback if skill file missing
         "max_tokens": 4000,
     },
     {
         "name": "cluster-investigation",
         "detect": _is_cluster_investigation,
-        "skill": None,
+        "skill": "cluster-investigation",           # loads skills/cluster-investigation/SKILL.md
         "preamble": "",
-        "system": SRE_INVESTIGATOR_SYSTEM_PROMPT,
+        "system": SRE_INVESTIGATOR_SYSTEM_PROMPT,   # fallback if skill file missing
         "max_tokens": 4000,
     },
 ]
 
+# Names already covered by built-in AGENT_REGISTRY (avoid double-registering from skills folder)
+_BUILTIN_SKILL_NAMES = {"mcs-expertise", "must-gather", "rhobs", "cluster-investigation", "rosa-backplane"}
 
-def resolve_agent(question: str) -> dict | None:
-    """Return the first matching agent for this question, or None for plain chat."""
+
+def _build_dynamic_registry(skills_dir: str | None) -> list[dict]:
+    """
+    Scan skills_dir and return extra agent entries for skills not already in AGENT_REGISTRY.
+    These are appended after the built-in registry when resolving agents.
+    """
+    if not skills_dir:
+        return []
+    extra = []
+    for skill in scan_skills_folder(skills_dir):
+        if skill["name"] in _BUILTIN_SKILL_NAMES:
+            continue
+        detect_fn = _make_dynamic_detect(skill["name"], skill["trigger_keywords"])
+        extra.append({
+            "name": skill["name"],
+            "detect": detect_fn,
+            "skill": skill["name"],
+            "preamble": "",
+            "system": None,
+            "max_tokens": 4000,
+            "_skills_dir": skills_dir,
+        })
+        logger.info(f"Dynamic skill registered: {skill['name']} ({len(skill['trigger_keywords'])} keywords)")
+    return extra
+
+
+def resolve_agent(question: str, skills_dir: str | None = None) -> dict | None:
+    """
+    Return the first matching agent for this question, or None for plain chat.
+    skills_dir: if provided, also checks dynamically discovered skills from that folder.
+    """
     for agent in AGENT_REGISTRY:
         if agent["detect"](question):
-            logger.info(f"Agent resolved: {agent['name']}")
+            logger.info(f"Built-in agent resolved: {agent['name']}")
+            return agent
+    for agent in _build_dynamic_registry(skills_dir):
+        if agent["detect"](question):
+            logger.info(f"Dynamic agent resolved: {agent['name']}")
             return agent
     return None
 
 
-def build_agent_system(agent: dict, case_number: str = "", extra_ctx: str = "") -> str | None:
+def list_skills(skills_dir: str | None = None) -> list[dict]:
+    """
+    Return a list of all available skills (built-in + discovered).
+    Each entry: {name, description, source}.
+    Used by the settings UI to show what skills are loaded.
+    """
+    result = []
+    seen = set()
+    # Built-in skills (from AGENT_REGISTRY)
+    for agent in AGENT_REGISTRY:
+        if agent.get("skill"):
+            name = agent["skill"]
+            if name not in seen:
+                seen.add(name)
+                result.append({"name": name, "description": (agent.get("system") or "")[:80] or "(built-in)", "source": "built-in"})
+        elif not agent.get("skill"):
+            name = agent["name"]
+            if name not in seen:
+                seen.add(name)
+                result.append({"name": name, "description": "(built-in inline prompt)", "source": "built-in"})
+    # Discovered skills from skills_dir
+    if skills_dir:
+        for skill in scan_skills_folder(skills_dir):
+            if skill["name"] not in seen:
+                seen.add(skill["name"])
+                result.append({"name": skill["name"], "description": skill["description"][:120], "source": skills_dir})
+    return result
+
+
+def build_agent_system(agent: dict, case_number: str = "", extra_ctx: str = "",
+                       skills_dir: str | None = None) -> str | None:
     """
     Return the system prompt for an agent:
-    - Prepends agent['preamble'] if set (overrides default skill behaviour for chat context).
-    - Then loads the skill file (if agent['skill'] is set).
+    - Prepends agent['preamble'] if set.
+    - Loads the skill file (checks skills_dir first, then defaults).
     - Falls back to agent['system'] if no skill or skill file missing.
     - Returns None if nothing is available (caller falls back to plain chat).
-    Prepends case number and optional extra context (SOP/KCS) when provided.
     """
     skill_content = ""
     if agent.get("skill"):
-        skill_content = load_skill(agent["skill"])
+        effective_dir = agent.get("_skills_dir") or skills_dir
+        skill_content = load_skill(agent["skill"], effective_dir)
 
     body = agent.get("preamble", "") + skill_content
     if not body:

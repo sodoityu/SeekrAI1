@@ -177,30 +177,58 @@ def _apply_inline(text: str) -> str:
     return text
 
 
-# Lazy-import cache for ask_sre
-_asksre_search_fn  = None
-_asksre_get_doc_fn = None
+# Ask-SRE search via persistent subprocess (avoids pydantic version conflicts)
+# The worker runs in ask-sre's own poetry env; it stays alive for the server lifetime.
+_ASKSRE_WORKER_SCRIPT = """\
+import sys, json, os
+sys.path.insert(0, '/home/jayu/asksre/ask-sre')
+# Load .env for DB connection
+_env_path = '/home/jayu/asksre/ask-sre/.env'
+if os.path.exists(_env_path):
+    with open(_env_path) as _f:
+        for _ln in _f:
+            _ln = _ln.strip()
+            if _ln and not _ln.startswith('#') and '=' in _ln:
+                _k, _, _v = _ln.partition('=')
+                _k = _k.strip(); _v = _v.strip().strip('"').strip("'")
+                if _k and _k not in os.environ:
+                    os.environ[_k] = _v
+from ask_sre.mcp.main import search_sre_docs
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        req = json.loads(line)
+        results = search_sre_docs(problem_statement=req['query'], max_results=req.get('max_results', 8))
+        print(json.dumps({'ok': True, 'results': results}), flush=True)
+    except Exception as e:
+        print(json.dumps({'ok': False, 'error': str(e)}), flush=True)
+"""
 
-def _get_asksre_fns():
-    global _asksre_search_fn, _asksre_get_doc_fn
-    if _asksre_search_fn is None:
-        try:
-            _poetry_venv = subprocess.check_output(
-                ["poetry", "env", "info", "--path"],
+import threading as _threading
+_asksre_worker      = None
+_asksre_worker_lock = _threading.Lock()
+
+
+def _search_asksre(query: str, max_results: int = 8) -> list:
+    """Call ask-sre search in a persistent subprocess to avoid Python env conflicts."""
+    global _asksre_worker
+    with _asksre_worker_lock:
+        if _asksre_worker is None or _asksre_worker.poll() is not None:
+            _asksre_worker = subprocess.Popen(
+                ["poetry", "run", "python", "-u", "-c", _ASKSRE_WORKER_SCRIPT],
                 cwd="/home/jayu/asksre/ask-sre",
-                text=True, stderr=subprocess.DEVNULL
-            ).strip()
-            _site_pkgs = _glob.glob(f"{_poetry_venv}/lib/python*/site-packages")
-            if _site_pkgs and _site_pkgs[0] not in sys.path:
-                sys.path.insert(0, _site_pkgs[0])
-            if "/home/jayu/asksre/ask-sre" not in sys.path:
-                sys.path.insert(0, "/home/jayu/asksre/ask-sre")
-        except Exception:
-            pass
-        from ask_sre.mcp.main import search_sre_docs, get_full_document
-        _asksre_search_fn  = search_sre_docs
-        _asksre_get_doc_fn = get_full_document
-    return _asksre_search_fn, _asksre_get_doc_fn
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL, text=True, bufsize=1,
+            )
+        _asksre_worker.stdin.write(json.dumps({"query": query, "max_results": max_results}) + "\n")
+        _asksre_worker.stdin.flush()
+        resp_line = _asksre_worker.stdout.readline()
+    resp = json.loads(resp_line)
+    if not resp.get("ok"):
+        raise RuntimeError(resp.get("error", "ask-sre worker error"))
+    return resp.get("results", [])
 
 def _get_ai_key():
     try:
@@ -238,22 +266,50 @@ def _get_ai_model():
             return user_model
     return CLAUDE_MODEL_ID
 
+def _get_skills_path():
+    """Return the configured skills directory for the current user (or the default)."""
+    try:
+        username = session.get('username')
+    except RuntimeError:
+        return _DEFAULT_SKILLS_DIR
+    if username:
+        tokens = load_user_tokens(username)
+        custom = tokens.get('skills_path', '').strip()
+        if custom and os.path.isdir(custom):
+            return custom
+    return _DEFAULT_SKILLS_DIR
+
+
 def _claude_post_with_retry(url, headers, payload, timeout, verify, max_retries=3):
-    """POST to Claude API, retrying with backoff on 429 rate-limit responses."""
+    """POST to Claude API, retrying with backoff on 429/502/503/504 responses."""
+    last_err = None
     for attempt in range(max_retries):
         try:
             resp = requests.post(url, headers=headers, json=payload, timeout=timeout, verify=verify)
         except requests.exceptions.Timeout:
             raise
+        except requests.exceptions.ConnectionError as e:
+            last_err = e
+            wait = 3 * (attempt + 1)
+            logger.warning(f"Claude API connection error, retrying in {wait}s (attempt {attempt + 1}/{max_retries}): {e}")
+            time.sleep(wait)
+            continue
         if resp.status_code == 429:
             raw = resp.headers.get('Retry-After', '')
             wait = min(int(raw) if raw.isdigit() else 5 * (attempt + 1), 30)
             logger.warning(f"Claude API 429 rate limit, retrying in {wait}s (attempt {attempt + 1}/{max_retries})")
             time.sleep(wait)
             continue
+        if resp.status_code in (502, 503, 504):
+            wait = 3 * (attempt + 1)
+            logger.warning(f"Claude API {resp.status_code} gateway error, retrying in {wait}s (attempt {attempt + 1}/{max_retries})")
+            time.sleep(wait)
+            continue
         resp.raise_for_status()
         return resp
-    raise RuntimeError(f"Claude API still rate-limited after {max_retries} retries")
+    if last_err:
+        raise RuntimeError(f"Claude API connection failed after {max_retries} retries: {last_err}")
+    raise RuntimeError(f"Claude API gateway error after {max_retries} retries")
 
 
 def call_claude_api(prompt: str, system: str = "", messages: list = None,
@@ -295,7 +351,7 @@ def call_claude_api(prompt: str, system: str = "", messages: list = None,
         return f"<p><strong>Claude API error:</strong> {str(e)}</p>"
 
 
-from chat_agents import resolve_agent, build_agent_system, load_skill
+from chat_agents import resolve_agent, build_agent_system, load_skill, list_skills, _DEFAULT_SKILLS_DIR
 
 ALLOWED_COMMANDS = [
     'oc ', 'oc\t', 'kubectl ', 'kubectl\t', 'rosa ',
@@ -401,6 +457,299 @@ def call_claude_with_tools(prompt: str, system: str = "", messages: list = None,
                     return block["text"]
             return f"<p>Stopped with reason: {stop_reason}</p>"
     return "<p>Investigation reached maximum turns without a final conclusion.</p>"
+
+
+# Lazy-load unified_search functions (module has Flask app at top level — safe to import but lazy)
+_us_search_sfdc_fn  = None
+_us_search_rovo_fn  = None
+_us_search_kcs_fn   = None
+_us_search_slack_fn = None
+
+def _get_unified_search_fns():
+    global _us_search_sfdc_fn, _us_search_rovo_fn, _us_search_kcs_fn, _us_search_slack_fn
+    if _us_search_sfdc_fn is None:
+        from unified_search import search_sfdc, search_rovo, search_kcs, search_slack
+        _us_search_sfdc_fn  = search_sfdc
+        _us_search_rovo_fn  = search_rovo
+        _us_search_kcs_fn   = search_kcs
+        _us_search_slack_fn = search_slack
+    return _us_search_sfdc_fn, _us_search_rovo_fn, _us_search_kcs_fn, _us_search_slack_fn
+
+
+def call_claude_with_search_tools(
+    prompt: str, system: str = "", messages: list = None,
+    max_tokens: int = 3000, timeout=(10, 230),
+    ai_base: str = None, ai_key: str = None, ai_model: str = None,
+    sfdc_offline_token: str = "",
+    rovo_token: str = "", rovo_mcp_url: str = "", rovo_cloud_id: str = "",
+    slack_xoxc: str = "", slack_xoxd: str = "",
+) -> str:
+    """Agentic loop where Claude can call search_sre_docs, search_sfdc_cases, search_rovo_jira, search_kcs, search_slack."""
+
+    def _tool_search_sre(query: str) -> str:
+        try:
+            results = _search_asksre(query, max_results=8)
+            if not results:
+                return "No SRE documentation found for this query."
+            parts = []
+            for r in results:
+                if not isinstance(r, dict):
+                    continue
+                sim   = r.get("similarity", 0)
+                title = r.get("title", "Untitled")
+                text  = (r.get("document_text") or "").strip()
+                src   = r.get("source", "")
+                fp    = r.get("file_path", "")
+                if not text:
+                    continue
+                label = "KCS Article" if src == "redhat_customer_portal" else "SRE SOP"
+                loc   = f"File: {fp}" if fp else f"Source: {src}"
+                parts.append(f"### {label}: {title}\n{loc} (relevance: {sim:.0%})\n\n{text}")
+            if not parts:
+                return "No SRE documentation found for this query."
+            return "\n\n---\n\n".join(parts)
+        except Exception as e:
+            logger.warning(f"search_sre_docs tool failed: {e}")
+            return f"SRE doc search failed: {e}"
+
+    def _tool_search_sfdc(query: str) -> str:
+        try:
+            search_sfdc, _, _, _ = _get_unified_search_fns()
+            config = {"redhat_token": sfdc_offline_token}
+            result = search_sfdc(query, max_results=5, config=config)
+            cases = result.get("cases", [])
+            if not cases:
+                return result.get("error") or "No similar SFDC cases found."
+            parts = []
+            for c in cases[:5]:
+                num     = c.get("case_number") or c.get("id", "")
+                subject = c.get("summary") or c.get("subject", "No summary")
+                status  = c.get("status", "")
+                product = c.get("product", "")
+                parts.append(f"Case {num}: {subject} [Status: {status}, Product: {product}]")
+            return "\n".join(parts)
+        except Exception as e:
+            logger.warning(f"SFDC search tool failed: {e}")
+            return f"SFDC case search failed: {e}"
+
+    def _tool_search_rovo(query: str) -> str:
+        try:
+            _, search_rovo, _, _ = _get_unified_search_fns()
+            config = {
+                "rovo_oauth_token": rovo_token,
+                "rovo_mcp_url":     rovo_mcp_url,
+                "rovo_cloud_id":    rovo_cloud_id,
+            }
+            result = search_rovo(query, max_results=5, config=config)
+            if result.get("error") == "rovo_token_expired":
+                return "Rovo token expired — please reconnect Rovo in Settings."
+            issues = result.get("issues", [])
+            if not issues:
+                return result.get("error") or "No Jira/Rovo issues found."
+            parts = []
+            for issue in issues[:5]:
+                key     = issue.get("key", "")
+                summary = issue.get("summary", "No summary")
+                status  = issue.get("status", "")
+                parts.append(f"{key}: {summary} [Status: {status}]")
+            return "\n".join(parts)
+        except Exception as e:
+            logger.warning(f"Rovo search tool failed: {e}")
+            return f"Rovo/Jira search failed: {e}"
+
+    def _tool_search_kcs(query: str) -> str:
+        try:
+            _, _, search_kcs, _ = _get_unified_search_fns()
+            config = {"redhat_token": sfdc_offline_token}
+            result = search_kcs(query, max_results=5, config=config)
+            articles = result.get("articles", [])
+            if not articles:
+                return result.get("error") or "No KCS articles found."
+            parts = []
+            for a in articles[:5]:
+                title = a.get("title", "Untitled")
+                url   = a.get("url") or a.get("view_uri", "")
+                body  = (a.get("body") or a.get("solution") or "").strip()
+                parts.append(f"### KCS: {title}\nURL: {url}\n\n{body[:2000]}")
+            return "\n\n---\n\n".join(parts)
+        except Exception as e:
+            logger.warning(f"KCS search tool failed: {e}")
+            return f"KCS search failed: {e}"
+
+    def _tool_search_slack(query: str) -> str:
+        try:
+            _, _, _, search_slack = _get_unified_search_fns()
+            config = {"slack_xoxc": slack_xoxc, "slack_xoxd": slack_xoxd}
+            result = search_slack(query, max_results=5, config=config)
+            msgs = result.get("messages", [])
+            if not msgs:
+                return result.get("error") or "No Slack messages found."
+            parts = []
+            for m in msgs[:5]:
+                text    = (m.get("text") or "").strip()
+                channel = m.get("channel_name") or m.get("channel", "")
+                ts      = m.get("timestamp") or m.get("ts", "")
+                parts.append(f"[#{channel} {ts}] {text[:600]}")
+            return "\n\n".join(parts)
+        except Exception as e:
+            logger.warning(f"Slack search tool failed: {e}")
+            return f"Slack search failed: {e}"
+
+    tools = [
+        {
+            "name": "search_sre_docs",
+            "description": (
+                "Search Red Hat SRE documentation: SOPs (Standard Operating Procedures), runbooks, "
+                "alert explanations, and troubleshooting guides from the ops-sop repository. "
+                "Use this when you need step-by-step procedures, alert definitions, or SRE best practices."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "SRE issue, alert name, or procedure to look up"}
+                },
+                "required": ["query"]
+            }
+        },
+        {
+            "name": "search_sfdc_cases",
+            "description": (
+                "Search SFDC (Salesforce) for similar past support cases. "
+                "Use this to find precedents, previous solutions, and workarounds from similar resolved cases."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Keywords describing the problem to find similar past cases"}
+                },
+                "required": ["query"]
+            }
+        },
+        {
+            "name": "search_rovo_jira",
+            "description": (
+                "Search Jira/Rovo for related engineering issues, known bugs, RFEs, and internal tickets. "
+                "Use this to find open or resolved Jira tickets related to the problem."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Keywords to search in Jira/Rovo"}
+                },
+                "required": ["query"]
+            }
+        },
+        {
+            "name": "search_kcs",
+            "description": (
+                "Search Red Hat KCS (Knowledge-Centered Service) articles on access.redhat.com. "
+                "Use this to find official Red Hat knowledge base articles, solutions, and product documentation "
+                "for known issues, bugs, and workarounds."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Keywords or problem description to search KCS articles"}
+                },
+                "required": ["query"]
+            }
+        },
+        {
+            "name": "search_slack",
+            "description": (
+                "Search Slack messages for internal team discussions, incident threads, and engineering context. "
+                "Use this to find recent conversations, decisions, and context from the team's Slack channels."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Keywords to search in Slack messages"}
+                },
+                "required": ["query"]
+            }
+        },
+    ]
+
+    key = ai_key or _get_ai_key()
+    if not key:
+        return "<p><strong>Error:</strong> Claude API key not configured.</p>"
+    base  = ai_base  or _get_ai_base()
+    model = ai_model or _get_ai_model()
+    endpoint = f"{base}/sonnet/models/{model}:streamRawPredict"
+    _ca = os.getenv("REQUESTS_CA_BUNDLE") or (_SYSTEM_CA if os.path.exists(_SYSTEM_CA) else True)
+    loop_deadline = time.time() + 225
+
+    if messages is None:
+        messages = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
+
+    for _ in range(8):
+        if time.time() > loop_deadline:
+            return "__TIMEOUT__"
+        payload = {
+            "anthropic_version": "vertex-2023-10-16",
+            "max_tokens": max_tokens,
+            "temperature": 0.2,
+            "tools": tools,
+            "tool_choice": {"type": "auto"},
+        }
+        if system:
+            payload["system"] = system
+        payload["messages"] = messages
+
+        try:
+            resp = _claude_post_with_retry(
+                endpoint,
+                headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+                payload=payload, timeout=timeout, verify=_ca
+            )
+            data = resp.json()
+        except requests.exceptions.Timeout:
+            return "__TIMEOUT__"
+        except Exception as e:
+            logger.error(f"Claude search-tools API error: {e}")
+            return f"<p><strong>Claude API error:</strong> {str(e)}</p>"
+
+        stop_reason    = data.get("stop_reason", "")
+        content_blocks = data.get("content", [])
+        messages.append({"role": "assistant", "content": content_blocks})
+
+        if stop_reason == "end_turn":
+            for block in content_blocks:
+                if block.get("type") == "text":
+                    return block["text"]
+            return "<p>Done.</p>"
+        elif stop_reason == "tool_use":
+            tool_results = []
+            for block in content_blocks:
+                if block.get("type") == "tool_use":
+                    tool_name  = block.get("name", "")
+                    tool_input = block.get("input", {})
+                    logger.info(f"Claude search tool: {tool_name}({tool_input})")
+                    if tool_name == "search_sre_docs":
+                        output = _tool_search_sre(tool_input.get("query", ""))
+                    elif tool_name == "search_sfdc_cases":
+                        output = _tool_search_sfdc(tool_input.get("query", ""))
+                    elif tool_name == "search_rovo_jira":
+                        output = _tool_search_rovo(tool_input.get("query", ""))
+                    elif tool_name == "search_kcs":
+                        output = _tool_search_kcs(tool_input.get("query", ""))
+                    elif tool_name == "search_slack":
+                        output = _tool_search_slack(tool_input.get("query", ""))
+                    else:
+                        output = f"Unknown tool: {tool_name}"
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block["id"],
+                        "content": output
+                    })
+            messages.append({"role": "user", "content": tool_results})
+        else:
+            for block in content_blocks:
+                if block.get("type") == "text":
+                    return block["text"]
+            return f"<p>Stopped: {stop_reason}</p>"
+
+    return "<p>Reached maximum search rounds without a conclusion.</p>"
 
 
 def exchange_offline_token(offline_token: str) -> str:
@@ -615,29 +964,29 @@ def extract_linked_resources(description: str, comments_text: str) -> dict:
 
 def _chat_search_sop(question: str) -> tuple:
     try:
-        search_fn, get_doc_fn = _get_asksre_fns()
+        results = _search_asksre(question, max_results=15)
+        # De-duplicate by file path, keep best score per file (ops-sop only)
         seen = {}
-        for r in search_fn(problem_statement=question, max_results=15):
-            if r.get("source") != "local_ops_sop": continue
+        for r in results:
+            if r.get("source") != "local_ops_sop":
+                continue
             fp = r.get("file_path", "")
-            if not fp: continue
+            if not fp:
+                continue
             score = r.get("similarity", 0)
             if fp not in seen or score > seen[fp]["score"]:
-                seen[fp] = {"score": score, "title": r.get("title", fp)}
+                seen[fp] = {"score": score, "title": r.get("title", fp), "text": r.get("document_text", "")}
         if not seen:
             return "", []
         top_docs = sorted(seen.items(), key=lambda x: x[1]["score"], reverse=True)[:2]
         parts, refs = [], []
         for fp, info in top_docs:
+            content = (info["text"] or "")[:4000]
+            if not content:
+                continue
             gh_url = f"https://github.com/openshift/ops-sop/blob/master/{fp}"
-            try:
-                full = get_doc_fn(document_id=fp, source="local_ops_sop")
-                content = (full.get("full_content") or "")[:4000]
-            except Exception:
-                content = ""
-            if content:
-                parts.append(f"### SOP: {info['title']}\nFile: {fp}\n\n{content}")
-                refs.append({"title": info['title'], "url": gh_url, "type": "local_ops_sop"})
+            parts.append(f"### SOP: {info['title']}\nFile: {fp}\n\n{content}")
+            refs.append({"title": info["title"], "url": gh_url, "type": "local_ops_sop"})
         return "\n\n---\n\n".join(parts), refs
     except Exception as e:
         logger.warning(f"Chat SOP search failed: {e}")
@@ -2483,6 +2832,38 @@ def test_ai_config():
 
 
 # ----------------------------------------------------------------------------
+# SKILLS SETTINGS
+# ----------------------------------------------------------------------------
+
+@app.route('/api/settings/skills', methods=['GET', 'POST'])
+def skills_settings():
+    """API endpoint to save/retrieve the skills folder path and list available skills."""
+    if 'username' not in session:
+        return jsonify({'error': 'Not authenticated'}), 401
+    username = session['username']
+
+    if request.method == 'POST':
+        data = request.get_json()
+        skills_path = data.get('skills_path', '').strip()
+        if skills_path and not os.path.isdir(skills_path):
+            return jsonify({'success': False, 'message': f'Directory not found: {skills_path}'}), 400
+        update_user_token(username, 'skills_path', skills_path)
+        return jsonify({'success': True, 'message': 'Skills path saved'})
+
+    # GET — return current path and discovered skills list
+    tokens = load_user_tokens(username)
+    skills_path = tokens.get('skills_path', '').strip()
+    effective_path = skills_path if (skills_path and os.path.isdir(skills_path)) else _DEFAULT_SKILLS_DIR
+    skills = list_skills(effective_path)
+    return jsonify({
+        'skills_path': skills_path,
+        'effective_path': effective_path,
+        'default_path': _DEFAULT_SKILLS_DIR,
+        'skills': skills,
+    })
+
+
+# ----------------------------------------------------------------------------
 # CHAI AI SETTINGS
 # ----------------------------------------------------------------------------
 
@@ -2719,8 +3100,11 @@ Use <code> for inline commands/values, <strong> for emphasis. Never invent detai
 
 
 def _call_claude_for_chat(question, case_number, case_summary, messages, sfdc_token,
-                          ai_base="", ai_key="", ai_model=""):
-    """Run the SOP+KCS search and Claude call for chat. Returns (answer_html, refs)."""
+                          ai_base="", ai_key="", ai_model="",
+                          rovo_token="", rovo_mcp_url="", rovo_cloud_id="",
+                          slack_xoxc="", slack_xoxd=""):
+    """Run the SOP+KCS search and Claude call for chat. Returns (answer_html, refs).
+    Claude now also has search tools it can invoke on demand."""
     sop_ctx, sop_refs = "", []
     kcs_ctx, kcs_refs = "", []
     with ThreadPoolExecutor(max_workers=2) as ex:
@@ -2736,11 +3120,17 @@ def _call_claude_for_chat(question, case_number, case_summary, messages, sfdc_to
 
     system_parts = [f"You are an expert Red Hat SRE analyst helping with SFDC case {case_number}."]
     if summary_text: system_parts.append(f"\nCASE ANALYSIS CONTEXT:\n{summary_text}")
-    if sop_ctx:      system_parts.append(f"\nRELEVANT SRE SOPs:\n{sop_ctx}")
-    if kcs_ctx:      system_parts.append(f"\nRELEVANT KCS ARTICLES:\n{kcs_ctx}")
+    if sop_ctx:      system_parts.append(f"\nRELEVANT SRE SOPs (pre-fetched):\n{sop_ctx}")
+    if kcs_ctx:      system_parts.append(f"\nRELEVANT KCS ARTICLES (pre-fetched):\n{kcs_ctx}")
     system_parts.append(
-        "\nAnswer the user's question using case context and SOP/KCS docs above. "
-        "Be concise and technical. Use HTML formatting (<p>, <ul>, <li>, <code>, <strong>) — no markdown."
+        "\nYou also have tools to search for more information when needed:\n"
+        "- search_sre_docs: search the SRE ops-sop runbooks and SOPs\n"
+        "- search_sfdc_cases: find similar past SFDC support cases\n"
+        "- search_rovo_jira: find related Jira/engineering issues\n"
+        "- search_kcs: search Red Hat KCS knowledge base articles\n"
+        "- search_slack: search Slack for internal team discussions\n"
+        "Use tools when the user asks you to search or when the pre-fetched context is insufficient.\n"
+        "Answer in HTML format (<p>, <ul>, <li>, <code>, <strong>) — no markdown."
     )
     system_ctx = "\n".join(p for p in system_parts if p)
 
@@ -2749,23 +3139,35 @@ def _call_claude_for_chat(question, case_number, case_summary, messages, sfdc_to
         api_messages.append({"role": msg['role'], "content": [{"type": "text", "text": str(msg['content'])}]})
     api_messages.append({"role": "user", "content": [{"type": "text", "text": question}]})
 
-    agent = resolve_agent(question)
+    skills_dir = _get_skills_path()
+    agent = resolve_agent(question, skills_dir=skills_dir)
     if agent:
         extra_ctx = "\n\n".join(p for p in [
             f"RELEVANT SRE SOPs:\n{sop_ctx}" if sop_ctx else "",
             f"RELEVANT KCS ARTICLES:\n{kcs_ctx}" if kcs_ctx else "",
         ] if p)
-        agent_system = build_agent_system(agent, case_number=case_number, extra_ctx=extra_ctx)
+        agent_system = build_agent_system(agent, case_number=case_number, extra_ctx=extra_ctx, skills_dir=skills_dir)
         if agent_system:
+            # Cluster investigation agent keeps run_command tool only
             answer = call_claude_with_tools("", system=agent_system, messages=api_messages,
                                             max_tokens=agent["max_tokens"],
                                             ai_base=ai_base, ai_key=ai_key, ai_model=ai_model)
         else:
-            answer = call_claude_api("", system=system_ctx, messages=api_messages, max_tokens=2500,
-                                     timeout=(10, 90), ai_base=ai_base, ai_key=ai_key, ai_model=ai_model)
+            answer = call_claude_with_search_tools(
+                "", system=system_ctx, messages=api_messages, max_tokens=2500,
+                ai_base=ai_base, ai_key=ai_key, ai_model=ai_model,
+                sfdc_offline_token=sfdc_token,
+                rovo_token=rovo_token, rovo_mcp_url=rovo_mcp_url, rovo_cloud_id=rovo_cloud_id,
+                slack_xoxc=slack_xoxc, slack_xoxd=slack_xoxd,
+            )
     else:
-        answer = call_claude_api("", system=system_ctx, messages=api_messages, max_tokens=2500,
-                                 timeout=(10, 90), ai_base=ai_base, ai_key=ai_key, ai_model=ai_model)
+        answer = call_claude_with_search_tools(
+            "", system=system_ctx, messages=api_messages, max_tokens=2500,
+            ai_base=ai_base, ai_key=ai_key, ai_model=ai_model,
+            sfdc_offline_token=sfdc_token,
+            rovo_token=rovo_token, rovo_mcp_url=rovo_mcp_url, rovo_cloud_id=rovo_cloud_id,
+            slack_xoxc=slack_xoxc, slack_xoxd=slack_xoxd,
+        )
 
     return answer, sop_refs + kcs_refs
 
@@ -2789,6 +3191,11 @@ def ai_case_chat():
         sfdc_token  = user_tokens.get('redhat_token', '') or os.getenv('RH_API_OFFLINE_TOKEN', '')
         chai_token  = user_tokens.get('chai_mcp_token', '') or CHAI_MCP_TOKEN
         chai_url    = user_tokens.get('chai_mcp_url', '') or CHAI_MCP_URL
+        rovo_token      = user_tokens.get('rovo_oauth_token', '')
+        rovo_mcp_url    = user_tokens.get('rovo_mcp_url', '')
+        rovo_cloud_id   = user_tokens.get('rovo_cloud_id', '')
+        slack_xoxc      = user_tokens.get('slack_xoxc', '')
+        slack_xoxd      = user_tokens.get('slack_xoxd', '')
         sources     = body.get('sources', ['claude'])
         # Capture AI config in request context — session is unavailable inside threads
         ai_base  = _get_ai_base()
@@ -2821,7 +3228,9 @@ def ai_case_chat():
             futures['chai']   = _ex.submit(call_chai_ask_persona, chai_question, 210, chai_token, chai_url)
         if use_claude:
             futures['claude'] = _ex.submit(_call_claude_for_chat, question, case_number, case_summary, messages, sfdc_token,
-                                           ai_base, ai_key, ai_model)
+                                           ai_base, ai_key, ai_model,
+                                           rovo_token, rovo_mcp_url, rovo_cloud_id,
+                                           slack_xoxc, slack_xoxd)
 
         if futures:
             futures_wait(list(futures.values()), timeout=225)
@@ -3057,11 +3466,17 @@ def ai_jira_chat():
 
         username    = session.get('username', '')
         user_tokens = load_user_tokens(username)
-        chai_token  = user_tokens.get('chai_mcp_token', '') or CHAI_MCP_TOKEN
-        chai_url    = user_tokens.get('chai_mcp_url', '') or CHAI_MCP_URL
-        ai_base     = _get_ai_base()
-        ai_key      = _get_ai_key()
-        ai_model    = _get_ai_model()
+        chai_token    = user_tokens.get('chai_mcp_token', '') or CHAI_MCP_TOKEN
+        chai_url      = user_tokens.get('chai_mcp_url', '') or CHAI_MCP_URL
+        sfdc_token    = user_tokens.get('redhat_token', '') or os.getenv('RH_API_OFFLINE_TOKEN', '')
+        rovo_token    = user_tokens.get('rovo_oauth_token', '')
+        rovo_mcp_url  = user_tokens.get('rovo_mcp_url', '')
+        rovo_cloud_id = user_tokens.get('rovo_cloud_id', '')
+        slack_xoxc    = user_tokens.get('slack_xoxc', '')
+        slack_xoxd    = user_tokens.get('slack_xoxd', '')
+        ai_base  = _get_ai_base()
+        ai_key   = _get_ai_key()
+        ai_model = _get_ai_model()
 
         # Build Claude system context
         summary_text = re.sub(r'<[^>]+>', ' ', issue_summary)
@@ -3071,8 +3486,14 @@ def ai_jira_chat():
         if summary_text:
             system_ctx += f"\n\nISSUE ANALYSIS CONTEXT:\n{summary_text}"
         system_ctx += (
-            "\n\nAnswer the user's question using the issue context above. "
-            "Be concise and technical. Use HTML formatting (<p>, <ul>, <li>, <code>, <strong>) — no markdown."
+            "\n\nYou have tools to search for more information when needed:\n"
+            "- search_sre_docs: search SRE SOPs, runbooks, and alert documentation\n"
+            "- search_sfdc_cases: find similar past SFDC support cases\n"
+            "- search_rovo_jira: find related Jira/engineering issues\n"
+            "- search_kcs: search Red Hat KCS knowledge base articles\n"
+            "- search_slack: search Slack for internal team discussions\n"
+            "Use tools when the user asks you to search, or when the context is insufficient.\n"
+            "Answer in HTML format (<p>, <ul>, <li>, <code>, <strong>) — no markdown."
         )
 
         api_messages = []
@@ -3084,8 +3505,13 @@ def ai_jira_chat():
         chai_answer   = ""
 
         def _run_claude():
-            ans = call_claude_api("", system=system_ctx, messages=api_messages, max_tokens=2000,
-                                  timeout=(10, 90), ai_base=ai_base, ai_key=ai_key, ai_model=ai_model)
+            ans = call_claude_with_search_tools(
+                "", system=system_ctx, messages=api_messages, max_tokens=2000,
+                ai_base=ai_base, ai_key=ai_key, ai_model=ai_model,
+                sfdc_offline_token=sfdc_token,
+                rovo_token=rovo_token, rovo_mcp_url=rovo_mcp_url, rovo_cloud_id=rovo_cloud_id,
+                slack_xoxc=slack_xoxc, slack_xoxd=slack_xoxd,
+            )
             return ans if ans != "__TIMEOUT__" else ""
 
         def _chai_q_with_context(q, hist):

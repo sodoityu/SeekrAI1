@@ -2462,6 +2462,10 @@ async function performSearch() {
 
     console.log('🔍 Performing search for:', query);
 
+    // Clear AI summary caches — results from previous search are no longer relevant
+    _sfdcSummaryCache.clear();
+    _jiraSummaryCache.clear();
+
     // Close Details panel when starting a new search
     const detailPanelElement = document.querySelector('.detail-panel');
     if (detailPanelElement) {
@@ -2478,10 +2482,7 @@ async function performSearch() {
     if (queryLower.includes('sfdc') || queryLower.includes('salesforce')) {
         detectedSources.push('salesforce');
     }
-    if (queryLower.includes('ohss') || queryLower.includes('jira')) {
-        detectedSources.push('ohss');
-    }
-    if (queryLower.includes('rovo')) {
+    if (queryLower.includes('rovo') || queryLower.includes('jira')) {
         detectedSources.push('rovo');
     }
     if (queryLower.includes('slack')) {
@@ -3522,7 +3523,7 @@ function renderRovoResults(rovo) {
     const count = rovo.issues?.length || 0;
     const headerElement = document.getElementById('rovo-count');
     const filterElement = document.getElementById('filter-rovo-count');
-    if (headerElement) headerElement.textContent = `Rovo Search (${count})`;
+    if (headerElement) headerElement.textContent = `Jira (Rovo) Search (${count})`;
     if (filterElement) filterElement.textContent = `(${count})`;
 
     if (!rovo.issues || rovo.issues.length === 0) {
@@ -3573,17 +3574,112 @@ function renderRovoResults(rovo) {
 let _rovoCurrentKey = '';
 const _jiraChatHistory = {};
 
+// Per-case AI summary caches — background generation; switching cases doesn't interrupt or lose results.
+// jira cache: issueKey → { status:'loading'|'done'|'error', fullHtml, summaryHtml, error }
+const _jiraSummaryCache = new Map();
+// sfdc cache: caseNumber → { status:'loading'|'done'|'error', fullHtml, summaryHtml, chatHistory, error }
+const _sfdcSummaryCache = new Map();
+
+function _applyJiraSummaryCache(issueKey) {
+    const result   = document.getElementById('ai-summary-result');
+    const trigger  = document.getElementById('ai-summary-trigger');
+    const chatBox  = document.getElementById('ai-chat-box');
+    const msgs     = document.getElementById('ai-chat-messages');
+    const aiBtn    = document.getElementById('ai-summary-btn');
+    const regenBar = document.getElementById('ai-regenerate-bar');
+    if (regenBar) regenBar.remove();
+    if (msgs) msgs.innerHTML = '';
+
+    const cached = _jiraSummaryCache.get(issueKey);
+    if (!cached) {
+        if (result)  { result.style.display = 'none'; result.innerHTML = ''; delete result.dataset.summary; }
+        if (trigger) trigger.style.display = 'block';
+        if (chatBox) chatBox.style.display = 'none';
+        if (aiBtn)   { aiBtn.textContent = '🤖 Generate AI Summary'; aiBtn.disabled = false; }
+    } else if (cached.status === 'loading') {
+        if (result)  { result.style.display = 'block'; result.innerHTML = '<div class="ai-summary-loading"><div class="loading-spinner"></div><p>⏳ Generating AI summary in background…</p></div>'; }
+        if (trigger) trigger.style.display = 'none';
+        if (chatBox) chatBox.style.display = 'none';
+        if (aiBtn)   { aiBtn.disabled = true; aiBtn.textContent = '⏳ Generating…'; }
+    } else if (cached.status === 'done') {
+        if (result)  { result.style.display = 'block'; result.innerHTML = cached.fullHtml; result.dataset.summary = cached.summaryHtml || ''; }
+        if (trigger) trigger.style.display = 'none';
+        if (chatBox) chatBox.style.display = 'block';
+        if (aiBtn)   { aiBtn.textContent = '🔄 Regenerate Summary'; aiBtn.disabled = false; }
+        if (result) result.insertAdjacentHTML('afterend', `
+            <div id="ai-regenerate-bar" style="padding:8px 0 4px;">
+                <button class="ai-summary-btn" style="font-size:12px;padding:6px 14px;" onclick="triggerJiraAISummaryInPanel()">🔄 Regenerate</button>
+            </div>`);
+    } else {
+        if (result)  { result.style.display = 'block'; result.innerHTML = `<p style="color:#fc8181;">⚠ ${escapeHtml(cached.error || 'Unknown error')} <button class="ai-summary-btn" style="font-size:12px;padding:4px 10px;" onclick="triggerJiraAISummaryInPanel()">🔄 Retry</button></p>`; }
+        if (trigger) trigger.style.display = 'none';
+        if (chatBox) chatBox.style.display = 'none';
+        if (msgs)    msgs.innerHTML = '';
+        if (aiBtn)   { aiBtn.disabled = false; aiBtn.textContent = '🤖 Retry AI Summary'; }
+    }
+}
+
+function _applySfdcSummaryCache(caseNum) {
+    const trigger  = document.getElementById('ai-summary-trigger');
+    const result   = document.getElementById('ai-summary-result');
+    const chatBox  = document.getElementById('ai-chat-box');
+    const btn      = document.getElementById('ai-summary-btn');
+    const msgs     = document.getElementById('ai-chat-messages');
+    const regenBar = document.getElementById('ai-regenerate-bar');
+    if (regenBar) regenBar.remove();
+    if (msgs) msgs.innerHTML = '';
+
+    const cached = _sfdcSummaryCache.get(caseNum);
+    if (!cached) {
+        if (trigger) trigger.style.display = 'block';
+        if (result)  { result.style.display = 'none'; result.innerHTML = ''; }
+        if (chatBox) chatBox.style.display = 'none';
+        if (btn)     { btn.disabled = false; btn.textContent = '🤖 Generate AI Summary'; }
+        _aiChatHistory = [];
+        _aiSummaryHtml = '';
+    } else if (cached.status === 'loading') {
+        if (trigger) trigger.style.display = 'none';
+        if (result)  { result.style.display = 'block'; result.innerHTML = '<div class="ai-summary-loading"><div class="loading-spinner"></div><p>⏳ Generating AI summary in background…</p></div>'; }
+        if (chatBox) chatBox.style.display = 'none';
+        if (btn)     { btn.disabled = true; btn.textContent = '⏳ Generating…'; }
+        _aiChatHistory = [];
+        _aiSummaryHtml = '';
+    } else if (cached.status === 'done') {
+        if (trigger) trigger.style.display = 'none';
+        if (result)  { result.style.display = 'block'; result.innerHTML = cached.fullHtml; }
+        if (chatBox) chatBox.style.display = 'block';
+        if (btn)     { btn.textContent = '🔄 Regenerate Summary'; btn.disabled = false; }
+        _aiChatHistory = [];
+        _aiSummaryHtml = cached.summaryHtml || '';
+        if (result) result.insertAdjacentHTML('afterend', `
+            <div id="ai-regenerate-bar" style="padding:8px 0 4px;">
+                <button class="ai-summary-btn" style="font-size:12px;padding:6px 14px;" onclick="triggerAISummary()">🔄 Regenerate</button>
+            </div>`);
+    } else {
+        if (trigger) trigger.style.display = 'block';
+        if (result)  { result.style.display = 'block'; result.innerHTML = `<p style="color:#fc8181;">⚠ ${escapeHtml(cached.error || 'Error')}</p>`; }
+        if (chatBox) chatBox.style.display = 'none';
+        if (btn)     { btn.disabled = false; btn.textContent = '🤖 Retry AI Summary'; }
+        _aiChatHistory = [];
+        _aiSummaryHtml = '';
+    }
+}
+
 async function triggerJiraAISummaryInPanel() {
     const issueKey = _rovoCurrentKey;
     if (!issueKey) return;
 
+    // Mark as loading in cache so other cases can switch away and back
+    _jiraSummaryCache.set(issueKey, { status: 'loading' });
+
+    // Update DOM only if we're still looking at this issue when we started
     const btn     = document.getElementById('ai-summary-btn');
     const result  = document.getElementById('ai-summary-result');
     const trigger = document.getElementById('ai-summary-trigger');
     const chatBox = document.getElementById('ai-chat-box');
-
-    if (btn) { btn.disabled = true; btn.textContent = '⏳ Analyzing with Claude…'; }
-    if (result) { result.style.display = 'block'; result.innerHTML = '<div class="ai-summary-loading"><div class="loading-spinner"></div><p>Generating AI summary — this may take up to 30 seconds…</p></div>'; }
+    if (btn)     { btn.disabled = true; btn.textContent = '⏳ Analyzing with Claude…'; }
+    if (result)  { result.style.display = 'block'; result.innerHTML = '<div class="ai-summary-loading"><div class="loading-spinner"></div><p>Generating AI summary — this may take up to 30 seconds…</p></div>'; }
+    if (trigger) trigger.style.display = 'none';
 
     try {
         const resp = await fetch('/api/ai/jira-summary', {
@@ -3594,42 +3690,48 @@ async function triggerJiraAISummaryInPanel() {
         });
         const data = await resp.json();
 
-        if (data.timeout) {
-            if (result) result.innerHTML = `<p style="color:#fc8181;">⏱ Claude timed out. <button class="ai-summary-btn" style="font-size:12px;padding:4px 10px;" onclick="triggerJiraAISummaryInPanel()">🔄 Retry</button></p>`;
-            if (btn) { btn.disabled = false; btn.textContent = '🤖 Generate AI Summary'; }
-            return;
-        }
-        if (data.error) {
-            if (result) result.innerHTML = `<p style="color:#fc8181;">⚠ ${escapeHtml(data.error)}</p>`;
-            if (btn) { btn.disabled = false; btn.textContent = '🤖 Retry AI Summary'; }
+        if (data.timeout || data.error) {
+            const errMsg = data.timeout ? '⏱ Claude timed out.' : `⚠ ${escapeHtml(data.error)}`;
+            _jiraSummaryCache.set(issueKey, { status: 'error', error: data.error || 'Timed out' });
+            if (_rovoCurrentKey === issueKey) {
+                if (result) result.innerHTML = `<p style="color:#fc8181;">${errMsg} <button class="ai-summary-btn" style="font-size:12px;padding:4px 10px;" onclick="triggerJiraAISummaryInPanel()">🔄 Retry</button></p>`;
+                if (trigger) trigger.style.display = 'none';
+                if (btn) { btn.disabled = false; btn.textContent = '🤖 Retry AI Summary'; }
+            }
             return;
         }
 
         const summaryHtml = data.html || '';
-        if (result) {
-            result.innerHTML = `
-                <div style="background:#ebf8ff;border-left:4px solid #4299e1;padding:8px 12px;margin-bottom:12px;border-radius:4px;">
-                    <strong style="color:#2b6cb0;">${escapeHtml(issueKey)}</strong>
-                    <span style="color:#718096;font-size:11px;margin-left:8px;">Status: ${escapeHtml(data.status || '')}</span>
-                </div>
-                <div class="ai-summary-body">${summaryHtml}</div>`;
-            result.dataset.summary = summaryHtml;
-        }
-        if (trigger) trigger.style.display = 'none';
-        if (chatBox) chatBox.style.display = 'block';
-        if (btn) { btn.textContent = '🔄 Regenerate Summary'; btn.disabled = false; }
+        const fullHtml = `
+            <div style="background:#ebf8ff;border-left:4px solid #4299e1;padding:8px 12px;margin-bottom:12px;border-radius:4px;">
+                <strong style="color:#2b6cb0;">${escapeHtml(issueKey)}</strong>
+                <span style="color:#718096;font-size:11px;margin-left:8px;">Status: ${escapeHtml(data.status || '')}</span>
+            </div>
+            <div class="ai-summary-body">${summaryHtml}</div>`;
+
+        _jiraSummaryCache.set(issueKey, { status: 'done', fullHtml, summaryHtml });
         _jiraChatHistory[issueKey] = [];
 
-        const existingRegen = document.getElementById('ai-regenerate-bar');
-        if (existingRegen) existingRegen.remove();
-        if (result) result.insertAdjacentHTML('afterend', `
-            <div id="ai-regenerate-bar" style="padding:8px 0 4px;">
-                <button class="ai-summary-btn" style="font-size:12px;padding:6px 14px;" onclick="triggerJiraAISummaryInPanel()">🔄 Regenerate</button>
-            </div>`);
+        // Only update DOM if the user is still viewing this issue
+        if (_rovoCurrentKey === issueKey) {
+            if (result) { result.style.display = 'block'; result.innerHTML = fullHtml; result.dataset.summary = summaryHtml; }
+            if (trigger) trigger.style.display = 'none';
+            if (chatBox) chatBox.style.display = 'block';
+            if (btn) { btn.textContent = '🔄 Regenerate Summary'; btn.disabled = false; }
+            const existingRegen = document.getElementById('ai-regenerate-bar');
+            if (existingRegen) existingRegen.remove();
+            if (result) result.insertAdjacentHTML('afterend', `
+                <div id="ai-regenerate-bar" style="padding:8px 0 4px;">
+                    <button class="ai-summary-btn" style="font-size:12px;padding:6px 14px;" onclick="triggerJiraAISummaryInPanel()">🔄 Regenerate</button>
+                </div>`);
+        }
 
     } catch (err) {
-        if (result) result.innerHTML = `<p style="color:#fc8181;">⚠ Request failed: ${escapeHtml(err.message)}</p>`;
-        if (btn) { btn.disabled = false; btn.textContent = '🤖 Retry AI Summary'; }
+        _jiraSummaryCache.set(issueKey, { status: 'error', error: err.message });
+        if (_rovoCurrentKey === issueKey) {
+            if (result) result.innerHTML = `<p style="color:#fc8181;">⚠ Request failed: ${escapeHtml(err.message)}</p>`;
+            if (btn) { btn.disabled = false; btn.textContent = '🤖 Retry AI Summary'; }
+        }
     }
 }
 
@@ -3668,7 +3770,6 @@ async function sendJiraAIChatInPanel() {
     loadingBubble.innerHTML = `<em style="color:#718096;">${useChai && !useClaude ? '🐼 Chai AI' : '🤖 Claude'} is thinking…</em>`;
     msgs.appendChild(loadingBubble);
     msgs.scrollTop = msgs.scrollHeight;
-    if (sendBtn) sendBtn.disabled = true;
 
     try {
         const resp = await fetch('/api/ai/jira-chat', {
@@ -3710,9 +3811,9 @@ async function sendJiraAIChatInPanel() {
         }
     } catch (err) {
         loadingBubble.innerHTML = `<span style="color:#fc8181;">⚠ ${escapeHtml(err.message)}</span>`;
+    } finally {
+        msgs.scrollTop = msgs.scrollHeight;
     }
-    msgs.scrollTop = msgs.scrollHeight;
-    if (sendBtn) sendBtn.disabled = false;
 }
 
 // Format Slack message text to HTML with proper rendering of mentions, links, and formatting
@@ -4433,6 +4534,8 @@ function showDetailPanel(resultData, source) {
     if (aiTab) {
         if (source === 'salesforce') {
             aiTab.style.display = '';
+            // Clear Rovo key so any in-flight Jira summary won't overwrite the SFDC panel
+            _rovoCurrentKey = '';
             setAIContext(resultData.case_number, resultData);
             // Restore SFDC AI button behaviour
             const aiBtn = document.getElementById('ai-summary-btn');
@@ -4443,20 +4546,13 @@ function showDetailPanel(resultData, source) {
             if (chatInput) { chatInput.onkeydown = null; }
         } else if (source === 'rovo') {
             aiTab.style.display = '';
+            // Clear SFDC case so any in-flight SFDC summary won't overwrite the Rovo panel
+            _aiCaseNumber = null;
             _rovoCurrentKey = resultData.key || '';
-            // Reset AI panel state for the new issue
-            const aiSummaryResult  = document.getElementById('ai-summary-result');
-            const aiSummaryTrigger = document.getElementById('ai-summary-trigger');
-            const aiChatBox        = document.getElementById('ai-chat-box');
-            const aiChatMsgs       = document.getElementById('ai-chat-messages');
-            const aiBtn            = document.getElementById('ai-summary-btn');
-            if (aiSummaryResult)  { aiSummaryResult.style.display = 'none'; aiSummaryResult.innerHTML = ''; delete aiSummaryResult.dataset.summary; }
-            if (aiSummaryTrigger) aiSummaryTrigger.style.display = 'block';
-            if (aiChatBox)        aiChatBox.style.display = 'none';
-            if (aiChatMsgs)       aiChatMsgs.innerHTML = '';
-            const regenBar = document.getElementById('ai-regenerate-bar');
-            if (regenBar) regenBar.remove();
-            if (aiBtn) { aiBtn.textContent = '🤖 Generate AI Summary'; aiBtn.disabled = false; aiBtn.onclick = triggerJiraAISummaryInPanel; }
+            // Restore cached AI summary state (or reset to trigger if not yet started)
+            _applyJiraSummaryCache(_rovoCurrentKey);
+            const aiBtn = document.getElementById('ai-summary-btn');
+            if (aiBtn) aiBtn.onclick = triggerJiraAISummaryInPanel;
             const chatSend = document.getElementById('ai-chat-send');
             if (chatSend) chatSend.onclick = sendJiraAIChatInPanel;
             const chatInput = document.getElementById('ai-chat-input');
@@ -7047,9 +7143,9 @@ function resetAISummaryPanel() {
 
 function setAIContext(caseNumber, caseData) {
     if (_aiCaseNumber !== caseNumber) {
-        resetAISummaryPanel();
         _aiCaseNumber = caseNumber;
         _aiCaseData   = caseData;
+        _applySfdcSummaryCache(caseNumber);
     }
 }
 
@@ -7058,13 +7154,17 @@ async function triggerAISummary() {
         alert('Please open an SFDC case first.');
         return;
     }
+    const caseNum = _aiCaseNumber;
+
+    // Mark as loading in cache — allows navigating away and back without losing progress
+    _sfdcSummaryCache.set(caseNum, { status: 'loading' });
+
     const btn     = document.getElementById('ai-summary-btn');
     const result  = document.getElementById('ai-summary-result');
     const trigger = document.getElementById('ai-summary-trigger');
-
-    btn.disabled = true;
-    btn.textContent = '⏳ Analyzing with Claude…';
+    if (btn)    { btn.disabled = true; btn.textContent = '⏳ Analyzing with Claude…'; }
     if (result) { result.style.display = 'block'; result.innerHTML = '<div class="ai-summary-loading"><div class="loading-spinner"></div><p>Generating AI summary — this may take up to 30 seconds…</p></div>'; }
+    if (trigger) trigger.style.display = 'none';
 
     try {
         const resp = await fetch('/api/ai/case-summary', {
@@ -7072,26 +7172,23 @@ async function triggerAISummary() {
             headers: {'Content-Type': 'application/json'},
             credentials: 'include',
             body: JSON.stringify({
-                case_number: _aiCaseNumber,
+                case_number: caseNum,
                 case_data:   _aiCaseData || {}
             })
         });
         const data = await resp.json();
 
-        if (data.timeout) {
-            result.innerHTML = '<p style="color:#fc8181;">⏱ Claude timed out. <button onclick="triggerAISummary()">🔄 Retry</button></p>';
-            btn.disabled = false;
-            btn.textContent = '🤖 Generate AI Summary';
-            return;
-        }
-        if (data.error && !data.html) {
-            result.innerHTML = `<p style="color:#fc8181;">⚠ ${escapeHtml(data.error)}</p>`;
-            btn.disabled = false;
-            btn.textContent = '🤖 Retry AI Summary';
+        if (data.timeout || (data.error && !data.html)) {
+            const errMsg = data.timeout ? '⏱ Claude timed out.' : `⚠ ${escapeHtml(data.error)}`;
+            _sfdcSummaryCache.set(caseNum, { status: 'error', error: data.error || 'Timed out' });
+            if (_aiCaseNumber === caseNum) {
+                if (result) result.innerHTML = `<p style="color:#fc8181;">${errMsg} <button onclick="triggerAISummary()">🔄 Retry</button></p>`;
+                if (btn) { btn.disabled = false; btn.textContent = '🤖 Retry AI Summary'; }
+            }
             return;
         }
 
-        _aiSummaryHtml = data.html || '';
+        const summaryHtml = data.html || '';
 
         // Build linked resources bar
         let linkedHtml = '';
@@ -7118,32 +7215,38 @@ async function triggerAISummary() {
         const modeColor = data.mode === 'closed' ? '#68d391' : '#f6ad55';
         const modeLabel = data.mode === 'closed' ? '📋 Closed Case — Post-mortem Summary' : '🔄 Open Case — Analysis & Suggestions';
 
-        result.innerHTML = `
+        const fullHtml = `
             <div class="ai-mode-banner" style="background:${modeColor}18; border-left:4px solid ${modeColor}; padding:8px 12px; margin-bottom:12px; border-radius:4px;">
                 <strong style="color:${modeColor};">${modeLabel}</strong>
                 <span style="color:#718096; font-size:11px; margin-left:8px;">Status: ${escapeHtml(data.status || '')}</span>
             </div>
             ${linkedHtml}
-            <div class="ai-summary-body">${data.html || ''}</div>`;
+            <div class="ai-summary-body">${summaryHtml}</div>`;
 
-        if (trigger) trigger.style.display = 'none';
-        const chatBox = document.getElementById('ai-chat-box');
-        if (chatBox) chatBox.style.display = 'block';
+        _sfdcSummaryCache.set(caseNum, { status: 'done', fullHtml, summaryHtml, chatHistory: [] });
 
-        btn.textContent = '🔄 Regenerate Summary';
-        btn.disabled = false;
-
-        const existingRegen = document.getElementById('ai-regenerate-bar');
-        if (existingRegen) existingRegen.remove();
-        result.insertAdjacentHTML('afterend', `
-            <div id="ai-regenerate-bar" style="padding: 8px 0 4px;">
-                <button class="ai-summary-btn" style="font-size:12px; padding:6px 14px;" onclick="triggerAISummary()">🔄 Regenerate</button>
-            </div>`);
+        // Only update DOM if the user is still viewing this case
+        if (_aiCaseNumber === caseNum) {
+            _aiSummaryHtml = summaryHtml;
+            if (result) result.innerHTML = fullHtml;
+            if (trigger) trigger.style.display = 'none';
+            const chatBox = document.getElementById('ai-chat-box');
+            if (chatBox) chatBox.style.display = 'block';
+            if (btn) { btn.textContent = '🔄 Regenerate Summary'; btn.disabled = false; }
+            const existingRegen = document.getElementById('ai-regenerate-bar');
+            if (existingRegen) existingRegen.remove();
+            if (result) result.insertAdjacentHTML('afterend', `
+                <div id="ai-regenerate-bar" style="padding: 8px 0 4px;">
+                    <button class="ai-summary-btn" style="font-size:12px; padding:6px 14px;" onclick="triggerAISummary()">🔄 Regenerate</button>
+                </div>`);
+        }
 
     } catch (err) {
-        result.innerHTML = `<p style="color:#fc8181;">⚠ Request failed: ${escapeHtml(err.message)}</p>`;
-        btn.disabled = false;
-        btn.textContent = '🤖 Retry AI Summary';
+        _sfdcSummaryCache.set(caseNum, { status: 'error', error: err.message });
+        if (_aiCaseNumber === caseNum) {
+            if (result) result.innerHTML = `<p style="color:#fc8181;">⚠ Request failed: ${escapeHtml(err.message)}</p>`;
+            if (btn) { btn.disabled = false; btn.textContent = '🤖 Retry AI Summary'; }
+        }
     }
 }
 
@@ -7155,6 +7258,9 @@ async function sendAIChat() {
 
     const question = input.value.trim();
     if (!question) return;
+
+    // Capture case key at call time — _aiCaseNumber may change if user switches case mid-flight
+    const caseNum = _aiCaseNumber;
 
     const userBubble = document.createElement('div');
     userBubble.className = 'ai-chat-msg-user';
@@ -7212,7 +7318,6 @@ async function sendAIChat() {
     msgs.scrollTop = msgs.scrollHeight;
 
     input.value = '';
-    sendBtn.disabled = true;
 
     const controller = new AbortController();
     const fetchTimeout = setTimeout(() => controller.abort(), 240000); // 4-minute client-side guard
@@ -7305,7 +7410,6 @@ async function sendAIChat() {
         errTarget.textContent = msg;
         msgs.scrollTop = msgs.scrollHeight;
     } finally {
-        sendBtn.disabled = false;
         input.focus();
     }
 }
